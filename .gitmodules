@@ -1,0 +1,7 @@
+[submodule "protocol"]
+	path = protocol
+	url = https://github.com/ihsanharh/Protocol.git
+	branch = pre/1.26.50
+[submodule "network"]
+	path = network
+	url = https://github.com/Kas-tle/NetworkCompatible.git

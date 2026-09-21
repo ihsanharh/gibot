@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="ERROR">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="[%d{HH:mm:ss.SSS}] [%highlight{%level}{FATAL=red, ERROR=red, WARN=yellow, INFO=green, DEBUG=cyan}] [%t] %c{1}: %msg%n" />
+            <!-- Denies any log event at WARN level -->
+            <LevelRangeFilter minLevel="WARN" maxLevel="WARN" onMatch="DENY" onMismatch="NEUTRAL" />
+        </Console>
+    </Appenders>
+    <Loggers>
+        <Logger name="com.ihsanharh.gibot" level="INFO" />
+        <Logger name="org.cloudburstmc" level="ERROR" />
+        <Logger name="io.netty" level="ERROR" />
+        <Root level="INFO">
+            <AppenderRef ref="Console" />
+        </Root>
+    </Loggers>
+</Configuration>

@@ -112,7 +112,7 @@ public class GiBot {
             mode = BotMode.GIFT;
             if (cleanArgs.length < 3) {
                 if (jsonOutput) {
-                    System.out.println("{\"status\":\"error\",\"error\":\"Missing arguments for gift! Usage: gift [username] [item]\"}");
+                    System.out.println("{\"status\":\"error\",\"message\":\"Missing arguments for gift! Usage: gift [username] [item]\"}");
                 } else {
                     System.out.println("Failed: Missing arguments for gift! Usage: ./gibot gift [username] [item]");
                 }
@@ -138,7 +138,7 @@ public class GiBot {
             }
         } else {
             if (jsonOutput) {
-                System.out.println("{\"status\":\"error\",\"error\":\"Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item]\"}");
+                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item]\"}");
             } else {
                 System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item]");
             }
@@ -229,7 +229,7 @@ public class GiBot {
             eventLoopGroup.shutdownGracefully().sync();
         } catch (Exception e) {
             if (finalJsonOutput) {
-                System.out.println("{\"status\":\"error\",\"error\":\"" + (e.getMessage() != null ? e.getMessage() : "Fatal connection error") + "\"}");
+                System.out.println("{\"status\":\"error\",\"message\":\"" + (e.getMessage() != null ? e.getMessage() : "Fatal connection error") + "\"}");
             } else {
                 System.out.println("Failed: " + (e.getMessage() != null ? e.getMessage() : "Fatal connection error"));
             }

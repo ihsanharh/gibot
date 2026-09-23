@@ -33,6 +33,13 @@ dependencies {
     implementation("org.apache.logging.log4j:log4j-api:2.12.2")
     implementation("org.apache.logging.log4j:log4j-slf4j-impl:2.12.2")
     implementation("org.checkerframework:checker-qual:3.37.0")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.withType<Test> {
+    useJUnitPlatform()
 }
 
 group = "com.ihsanharh"

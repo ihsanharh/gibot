@@ -341,6 +341,14 @@ public class BotPacketHandler implements BedrockPacketHandler {
         if (info.isMainForm()) {
             this.activeSubcategory = null;
 
+            // Checker: Account does not have any gift tokens (form returns only Buy Gifts)
+            if (info.hasNoGiftTokens() || (info.getTokenBalance() != -1 && info.getTokenBalance() <= 0)) {
+                log.warn("Account has no gift tokens! /gift form returned only 'Buy Gifts'.");
+                outputFailure("Account does not have any gift tokens!");
+                disconnectAndExit(1);
+                return PacketSignal.HANDLED;
+            }
+
             if (!crawlInProgress) {
                 log.info("Gifting Main Menu loaded. Token Balance: {} Tokens", info.getTokenBalance());
 
@@ -423,6 +431,14 @@ public class BotPacketHandler implements BedrockPacketHandler {
             this.cachedTokenBalance = info.getTokenBalance();
         }
 
+        // Checker: Account does not have any gift tokens (form returns only Buy Gifts)
+        if (info.hasNoGiftTokens() || (cachedTokenBalance != -1 && cachedTokenBalance <= 0)) {
+            log.warn("Account has no gift tokens! /gift form returned only 'Buy Gifts'. Cannot gift '{}' to '{}'.", targetItem, recipient);
+            outputFailure("Account does not have any gift tokens!");
+            disconnectAndExit(1);
+            return;
+        }
+
         // 1. If currently searching sub-menus:
         if (giftStep == GiftStep.SEARCHING_SUBMENUS) {
             if (!giftSearchQueue.isEmpty()) {
@@ -469,7 +485,11 @@ public class BotPacketHandler implements BedrockPacketHandler {
         giftSearchQueue.clear();
         giftSearchQueue.addAll(info.getSubcategories());
         if (giftSearchQueue.isEmpty()) {
-            outputFailure("Item '" + targetItem + "' was not found in store or any sub-menu.");
+            if (info.hasNoGiftTokens() || cachedTokenBalance == 0) {
+                outputFailure("Account does not have any gift tokens!");
+            } else {
+                outputFailure("Item '" + targetItem + "' was not found in store or any sub-menu.");
+            }
             disconnectAndExit(1);
             return;
         }
@@ -657,9 +677,9 @@ public class BotPacketHandler implements BedrockPacketHandler {
             JsonObject root = JsonParser.parseString(formJson).getAsJsonObject();
             if (!root.has("buttons") || !root.get("buttons").isJsonArray()) return -1;
             JsonArray buttons = root.getAsJsonArray("buttons");
-            String query = targetName.trim().toLowerCase();
+            String query = targetName.trim();
 
-            // 1. Exact first line match
+            // Exact first line match only (letter-by-letter, case-insensitive)
             for (int i = 0; i < buttons.size(); i++) {
                 String raw = buttons.get(i).getAsJsonObject().get("text").getAsString();
                 String clean = CatalogManager.cleanFormatting(raw);
@@ -667,31 +687,6 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 if (isNavigationButton(line0)) continue;
                 if (line0.equalsIgnoreCase(query)) {
                     return i;
-                }
-            }
-
-            // 2. Contains match
-            for (int i = 0; i < buttons.size(); i++) {
-                String raw = buttons.get(i).getAsJsonObject().get("text").getAsString();
-                String clean = CatalogManager.cleanFormatting(raw);
-                String line0 = clean.split("\n")[0].replaceFirst("(?i)^NEW\\s+", "").trim();
-                if (isNavigationButton(line0)) continue;
-                if (line0.toLowerCase().contains(query) || query.contains(line0.toLowerCase())) {
-                    return i;
-                }
-            }
-
-            // 3. Word-level match (e.g. "cardboard hat" -> "Cardboard Box")
-            String[] words = query.split("\\s+");
-            for (int i = 0; i < buttons.size(); i++) {
-                String raw = buttons.get(i).getAsJsonObject().get("text").getAsString();
-                String clean = CatalogManager.cleanFormatting(raw);
-                String line0 = clean.split("\n")[0].replaceFirst("(?i)^NEW\\s+", "").trim().toLowerCase();
-                if (isNavigationButton(line0)) continue;
-                for (String word : words) {
-                    if (word.length() >= 4 && line0.contains(word)) {
-                        return i;
-                    }
                 }
             }
         } catch (Exception e) {
@@ -703,7 +698,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private boolean isNavigationButton(String text) {
         if (text == null) return true;
         String t = text.trim().toLowerCase();
-        return t.equalsIgnoreCase("go back") || t.equalsIgnoreCase("back") || t.equalsIgnoreCase("buy gifts");
+        return t.contains("go back") || t.contains("back") || t.contains("buy gifts");
     }
 
     private String getButtonNameInForm(String formJson, int buttonIndex) {
@@ -724,10 +719,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
     }
 
     private boolean checkItemBalance(CatalogManager.ParsedFormInfo info, String itemName) {
+        if (itemName == null) return false;
+        String query = itemName.trim();
         for (CatalogManager.ItemEntry item : info.getItems()) {
-            if (item.getName().equalsIgnoreCase(itemName)
-                    || itemName.toLowerCase().contains(item.getName().toLowerCase())
-                    || item.getName().toLowerCase().contains(itemName.toLowerCase())) {
+            if (item.getName().equalsIgnoreCase(query)) {
                 if (cachedTokenBalance != -1 && item.getTokenCost() > 0 && cachedTokenBalance < item.getTokenCost()) {
                     outputFailure(String.format("Insufficient tokens! Available: %d, Required: %d.",
                             cachedTokenBalance, item.getTokenCost()));

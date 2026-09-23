@@ -89,7 +89,10 @@ public class CatalogManager {
 
             for (int i = 0; i < buttons.size(); i++) {
                 String btnText = cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
-                if (TOKEN_AVAIL_PATTERN.matcher(btnText).find()) {
+                String line0 = btnText.split("\n")[0].trim();
+                if (TOKEN_AVAIL_PATTERN.matcher(btnText).find()
+                        || line0.equalsIgnoreCase("Buy Gifts")
+                        || line0.toLowerCase().startsWith("buy gifts")) {
                     isMainForm = true;
                     break;
                 }
@@ -99,6 +102,24 @@ public class CatalogManager {
 
             if (isMainForm) {
                 this.data.setAccountName(accountName);
+
+                // Checker: when the account has no gift tokens, Hive returns only 1 button: "Buy Gifts"
+                boolean onlyBuyGiftsButton = false;
+                if (buttons.size() == 1) {
+                    String btn0 = cleanFormatting(buttons.get(0).getAsJsonObject().get("text").getAsString());
+                    String line0 = btn0.split("\n")[0].trim();
+                    if (line0.equalsIgnoreCase("Buy Gifts") || line0.toLowerCase().startsWith("buy gifts")) {
+                        onlyBuyGiftsButton = true;
+                    }
+                }
+
+                if (onlyBuyGiftsButton) {
+                    info.setNoTokens(true);
+                    info.setTokenBalance(0);
+                    this.data.setAccountTokenBalance(0);
+                    log.warn("Account has no gift tokens! /gift form returned only one button: 'Buy Gifts'.");
+                }
+
                 for (int i = 0; i < buttons.size(); i++) {
                     String raw = buttons.get(i).getAsJsonObject().get("text").getAsString();
                     String clean = cleanFormatting(raw);
@@ -110,6 +131,9 @@ public class CatalogManager {
                         int balance = Integer.parseInt(tokenAvail.group(1));
                         this.data.setAccountTokenBalance(balance);
                         info.setTokenBalance(balance);
+                        if (balance == 0) {
+                            info.setNoTokens(true);
+                        }
                     }
 
                     if (btnName.toLowerCase().contains("buy gifts")) {
@@ -189,27 +213,11 @@ public class CatalogManager {
 
     public Optional<ItemEntry> findItem(String query) {
         if (query == null || query.isBlank()) return Optional.empty();
-        String q = query.trim().toLowerCase();
+        String q = query.trim();
 
         for (ItemEntry entry : data.getItems().values()) {
             if (entry.getName().equalsIgnoreCase(q)) {
                 return Optional.of(entry);
-            }
-        }
-
-        for (ItemEntry entry : data.getItems().values()) {
-            if (entry.getName().toLowerCase().contains(q)) {
-                return Optional.of(entry);
-            }
-        }
-
-        String[] words = q.split("\\s+");
-        for (ItemEntry entry : data.getItems().values()) {
-            String nameLower = entry.getName().toLowerCase();
-            for (String word : words) {
-                if (word.length() >= 4 && nameLower.contains(word)) {
-                    return Optional.of(entry);
-                }
             }
         }
 
@@ -226,7 +234,7 @@ public class CatalogManager {
             if (jsonOutput) {
                 JsonObject obj = new JsonObject();
                 obj.addProperty("status", "error");
-                obj.addProperty("error", "Item '" + query + "' was not found in store or any sub-menu.");
+                obj.addProperty("message", "Item '" + query + "' was not found in store or any sub-menu.");
                 return obj.toString();
             }
             return String.format("Failed: Item '%s' was not found in store or any sub-menu.", query);
@@ -266,7 +274,7 @@ public class CatalogManager {
             if (jsonOutput) {
                 JsonObject obj = new JsonObject();
                 obj.addProperty("status", "error");
-                obj.addProperty("error", "Catalog is empty. No items found.");
+                obj.addProperty("message", "Catalog is empty. No items found.");
                 System.out.println(obj.toString());
             } else {
                 System.out.println("Failed: Catalog is empty. No items found.");
@@ -335,9 +343,14 @@ public class CatalogManager {
     public static class ParsedFormInfo {
         private String title = "";
         private boolean isMainForm = false;
+        private boolean noTokens = false;
         private int tokenBalance = -1;
         private final List<SubcategoryButton> subcategories = new ArrayList<>();
         private final List<ItemEntry> items = new ArrayList<>();
         private int goBackButtonIndex = -1;
+
+        public boolean hasNoGiftTokens() {
+            return noTokens || tokenBalance == 0;
+        }
     }
 }

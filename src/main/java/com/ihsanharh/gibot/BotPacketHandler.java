@@ -38,8 +38,10 @@ import org.cloudburstmc.protocol.bedrock.packet.ResourcePackStackPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ServerToClientHandshakePacket;
 import org.cloudburstmc.protocol.bedrock.packet.ServerboundLoadingScreenPacket;
 import org.cloudburstmc.protocol.bedrock.packet.SetLocalPlayerAsInitializedPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetTitlePacket;
 import org.cloudburstmc.protocol.bedrock.packet.StartGamePacket;
 import org.cloudburstmc.protocol.bedrock.packet.TextPacket;
+import org.cloudburstmc.protocol.bedrock.packet.ToastRequestPacket;
 import org.cloudburstmc.protocol.bedrock.util.EncryptionUtils;
 import org.cloudburstmc.protocol.bedrock.util.JsonUtils;
 import org.cloudburstmc.protocol.common.PacketSignal;
@@ -341,6 +343,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
     @Override
     public PacketSignal handle(ModalFormRequestPacket packet) {
         String rawJson = packet.getFormData();
+        log.info("RAW FORM RECEIVED [id={}]: {}", packet.getFormId(), rawJson);
         CatalogManager.ParsedFormInfo info = catalogManager.processForm(rawJson, account.getDisplayName(), activeSubcategory);
 
         if (mode == GiBot.BotMode.GIFT) {
@@ -650,13 +653,13 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 log.info("Submitting confirmation ('Yes' / true)...");
                 this.giftStep = GiftStep.CONFIRMING_GIFT;
                 ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
-                // Fallback in case chat packet doesn't arrive
+                // Fallback in case chat packet doesn't arrive (wait up to 15s to capture all packets/forms)
                 ticker.schedule(() -> {
                     if (session.isConnected()) {
                         outputSuccess(String.format("Gift '%s' submitted for player '%s'.", targetItem, recipient));
                         disconnectAndExit(0);
                     }
-                }, 4000, TimeUnit.MILLISECONDS);
+                }, 15000, TimeUnit.MILLISECONDS);
                 return;
             } else if ("form".equalsIgnoreCase(formType)) {
                 JsonArray buttons = root.has("buttons") ? root.getAsJsonArray("buttons") : new JsonArray();
@@ -680,13 +683,13 @@ public class BotPacketHandler implements BedrockPacketHandler {
                     this.giftStep = GiftStep.CONFIRMING_GIFT;
                     final int cIdx = confirmBtnIdx;
                     ticker.schedule(() -> clickFormButton(packet.getFormId(), cIdx), 150, TimeUnit.MILLISECONDS);
-                    // Fallback in case chat packet doesn't arrive
+                    // Fallback in case chat packet doesn't arrive (wait up to 15s to capture all packets/forms)
                     ticker.schedule(() -> {
                         if (session.isConnected()) {
                             outputSuccess(String.format("Gift '%s' submitted for player '%s'.", targetItem, recipient));
                             disconnectAndExit(0);
                         }
-                    }, 4000, TimeUnit.MILLISECONDS);
+                    }, 15000, TimeUnit.MILLISECONDS);
                     return;
                 } else {
                     String content = root.has("content") ? CatalogManager.cleanFormatting(root.get("content").getAsString()) : "";
@@ -815,6 +818,18 @@ public class BotPacketHandler implements BedrockPacketHandler {
     @Override
     public PacketSignal handle(DisconnectPacket packet) {
         log.info("Disconnected by server: {}", packet.getKickMessage());
+        return PacketSignal.HANDLED;
+    }
+
+    @Override
+    public PacketSignal handle(SetTitlePacket packet) {
+        log.info("Server SetTitlePacket [type={}]: text='{}'", packet.getType(), packet.getText());
+        return PacketSignal.HANDLED;
+    }
+
+    @Override
+    public PacketSignal handle(ToastRequestPacket packet) {
+        log.info("Server ToastRequestPacket: title='{}', content='{}'", packet.getTitle(), packet.getContent());
         return PacketSignal.HANDLED;
     }
 

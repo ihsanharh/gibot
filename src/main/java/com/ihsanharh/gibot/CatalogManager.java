@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
 @Log4j2
 public class CatalogManager {
     private static final Pattern MINECRAFT_FORMATTING = Pattern.compile("(?i)§[0-9a-z]");
-    private static final Pattern TOKEN_AVAIL_PATTERN = Pattern.compile("(\\d+)\\s+Gift Tokens Available", Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOKEN_AVAIL_PATTERN = Pattern.compile("(\\d+)\\s+Gift Tokens?\\s+Available", Pattern.CASE_INSENSITIVE);
     private static final Pattern DIRECT_COST_PATTERN = Pattern.compile("\\((\\d+)(?:-(\\d+))?\\s+tokens?\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SUB_ITEM_COST_PATTERN = Pattern.compile("(\\d+)\\s+Tokens?", Pattern.CASE_INSENSITIVE);
     private static final Pattern STOCK_PATTERN = Pattern.compile("(\\d+)\\s+Available", Pattern.CASE_INSENSITIVE);

@@ -104,17 +104,31 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     public void outputSuccess(String message) {
         if (!outputPrinted.compareAndSet(false, true)) return;
+        int remainingTokens = -1;
+        if (cachedTokenBalance != -1) {
+            int cost = (targetItemCost > 0) ? targetItemCost : 1;
+            remainingTokens = Math.max(0, cachedTokenBalance - cost);
+        }
+
         if (jsonOutput) {
             JsonObject obj = new JsonObject();
             obj.addProperty("status", "success");
             if (mode == GiBot.BotMode.GIFT) {
                 obj.addProperty("recipient", recipient);
                 obj.addProperty("item", targetItem);
+                if (remainingTokens != -1) {
+                    obj.addProperty("remainingTokens", remainingTokens);
+                    obj.addProperty("remainingBalance", remainingTokens);
+                }
             }
             obj.addProperty("message", message);
             System.out.println(obj.toString());
         } else {
-            System.out.println("Success: " + message);
+            if (mode == GiBot.BotMode.GIFT && remainingTokens != -1) {
+                System.out.println(String.format("Success: %s (Remaining Tokens: %d)", message, remainingTokens));
+            } else {
+                System.out.println("Success: " + message);
+            }
         }
     }
 
@@ -252,8 +266,8 @@ public class BotPacketHandler implements BedrockPacketHandler {
         log.info("Received StartGamePacket: entityId={}", runtimeEntityId);
 
         RequestChunkRadiusPacket chunkRadius = new RequestChunkRadiusPacket();
-        chunkRadius.setRadius(4);
-        chunkRadius.setMaxRadius(8);
+        chunkRadius.setRadius(1);
+        chunkRadius.setMaxRadius(1);
         session.sendPacketImmediately(chunkRadius);
 
         ServerboundLoadingScreenPacket startLoading = new ServerboundLoadingScreenPacket();
@@ -308,6 +322,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private int completedSubcategories = 0;
     private String activeSubcategory = null;
     private int cachedTokenBalance = -1;
+    private int targetItemCost = 0;
     private final AtomicBoolean exiting = new AtomicBoolean(false);
 
     public void disconnectAndExit(int exitCode) {
@@ -723,6 +738,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         String query = itemName.trim();
         for (CatalogManager.ItemEntry item : info.getItems()) {
             if (item.getName().equalsIgnoreCase(query)) {
+                this.targetItemCost = item.getTokenCost();
                 if (cachedTokenBalance != -1 && item.getTokenCost() > 0 && cachedTokenBalance < item.getTokenCost()) {
                     outputFailure(String.format("Insufficient tokens! Available: %d, Required: %d.",
                             cachedTokenBalance, item.getTokenCost()));

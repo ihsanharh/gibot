@@ -10,6 +10,8 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import lombok.extern.log4j.Log4j2;
 import net.lenni0451.commons.httpclient.HttpClient;
+import net.lenni0451.commons.httpclient.proxy.ProxyHandler;
+import net.lenni0451.commons.httpclient.proxy.ProxyType;
 import net.raphimc.minecraftauth.MinecraftAuth;
 import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.netty.channel.raknet.RakChannelFactory;
@@ -29,6 +31,9 @@ import org.cloudburstmc.protocol.bedrock.packet.RequestNetworkSettingsPacket;
 import org.cloudburstmc.protocol.common.util.VarInts;
 
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Log4j2
@@ -71,15 +76,71 @@ public class GiBot {
         GIFT
     }
 
+    public static void configureHttpProxy(HttpClient httpClient, String proxyUrl) {
+        if (proxyUrl == null || proxyUrl.isBlank()) {
+            return;
+        }
+        try {
+            String normalized = proxyUrl.trim();
+            if (!normalized.contains("://")) {
+                normalized = "http://" + normalized;
+            }
+            URI uri = URI.create(normalized);
+            String scheme = uri.getScheme() != null ? uri.getScheme().toLowerCase() : "http";
+            ProxyType proxyType = scheme.startsWith("socks") ? ProxyType.SOCKS5 : ProxyType.HTTP;
+            if (scheme.equalsIgnoreCase("socks4")) {
+                proxyType = ProxyType.SOCKS4;
+            }
+
+            String host = uri.getHost();
+            if (host == null || host.isBlank()) {
+                throw new IllegalArgumentException("Proxy host cannot be empty in " + proxyUrl);
+            }
+            int port = uri.getPort();
+            if (port == -1) {
+                port = proxyType == ProxyType.HTTP ? 8080 : 1080;
+            }
+
+            String username = null;
+            String password = null;
+            String userInfo = uri.getRawUserInfo();
+            if (userInfo != null && !userInfo.isEmpty()) {
+                String[] parts = userInfo.split(":", 2);
+                username = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
+                if (parts.length > 1) {
+                    password = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
+                }
+            }
+
+            if (proxyType == ProxyType.HTTP) {
+                ProxyHandler proxyHandler = new ProxyHandler(proxyType, host, port, username, password);
+                httpClient.setProxyHandler(proxyHandler);
+                String maskedAuth = username != null ? (username + (password != null ? ":***@" : "@")) : "";
+                log.info("Configured HTTP proxy for Microsoft Auth: {}://{}{}:{}", scheme, maskedAuth, host, port);
+            } else {
+                log.info("SOCKS proxy detected: SOCKS5 is used for Bedrock RakNet UDP session (Microsoft Auth connects direct via HTTPS)");
+            }
+        } catch (Exception e) {
+            log.error("Failed to parse proxy URL '{}': {}", proxyUrl, e.getMessage());
+            throw new IllegalArgumentException("Invalid proxy URL: " + proxyUrl, e);
+        }
+    }
+
     public static void main(String[] args) {
         boolean verbose = false;
         boolean jsonOutput = false;
+        String proxyArg = null;
         java.util.List<String> cleanArgsList = new java.util.ArrayList<>();
-        for (String arg : args) {
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
             if (arg.equalsIgnoreCase("-v") || arg.equalsIgnoreCase("--verbose")) {
                 verbose = true;
             } else if (arg.equalsIgnoreCase("-j") || arg.equalsIgnoreCase("--json")) {
                 jsonOutput = true;
+            } else if ((arg.equalsIgnoreCase("-p") || arg.equalsIgnoreCase("--proxy")) && i + 1 < args.length) {
+                proxyArg = args[++i];
+            } else if (arg.toLowerCase().startsWith("--proxy=")) {
+                proxyArg = arg.substring("--proxy=".length());
             } else {
                 cleanArgsList.add(arg);
             }
@@ -99,6 +160,7 @@ public class GiBot {
             System.out.println("  ./gibot fetch [item]           -> Fetch specific item token cost & image");
             System.out.println("  ./gibot gift [username] [item] -> Gift an item to a player");
             System.out.println("Options:");
+            System.out.println("  -p, --proxy <url>              -> HTTP or SOCKS5 proxy URL");
             System.out.println("  -j, --json                     -> Output in machine-readable JSON format");
             System.out.println("  -v, --verbose                  -> Show full connection & debug logs");
             return;
@@ -165,20 +227,35 @@ public class GiBot {
         final String finalTargetItem = targetItem;
         final boolean finalJsonOutput = jsonOutput;
 
+        Socks5UdpRelay socks5Relay = null;
         try {
             HttpClient httpClient = MinecraftAuth.createHttpClient();
+            if (proxyArg != null && !proxyArg.isBlank()) {
+                configureHttpProxy(httpClient, proxyArg);
+                String normalized = proxyArg.trim().toLowerCase();
+                if (normalized.startsWith("socks5://") || normalized.startsWith("socks://") || (!normalized.contains("://") && !normalized.startsWith("http"))) {
+                    socks5Relay = Socks5UdpRelay.create(proxyArg);
+                }
+            }
             Account account = Account.getOrAuthenticate(httpClient, CODEC.getMinecraftVersion());
 
             InetSocketAddress targetAddress = new InetSocketAddress(host, port);
             NioEventLoopGroup eventLoopGroup = new NioEventLoopGroup();
 
+            final Socks5UdpRelay finalSocks5Relay = socks5Relay;
             Bootstrap bootstrap = new Bootstrap()
                     .group(eventLoopGroup)
-                    .channelFactory(RakChannelFactory.client(NioDatagramChannel.class))
+                    .channelFactory(RakChannelFactory.client(NioDatagramChannel.class, datagramChannel -> {
+                        if (finalSocks5Relay != null) {
+                            datagramChannel.pipeline().addFirst("socks5-udp",
+                                    new Socks5UdpHandler(finalSocks5Relay.getRelayAddress(), targetAddress));
+                            log.info("Attached SOCKS5 UDP handler to datagram pipeline.");
+                        }
+                    }))
                     .option(RakChannelOption.RAK_PROTOCOL_VERSION, CODEC.getRaknetProtocolVersion())
                     .option(RakChannelOption.RAK_COMPATIBILITY_MODE, true)
-                    .option(RakChannelOption.RAK_IP_DONT_FRAGMENT, true)
-                    .option(RakChannelOption.RAK_MTU_SIZES, new Integer[]{1492, 1200, 576})
+                    .option(RakChannelOption.RAK_IP_DONT_FRAGMENT, finalSocks5Relay == null)
+                    .option(RakChannelOption.RAK_MTU_SIZES, finalSocks5Relay != null ? new Integer[]{1400, 1200, 576} : new Integer[]{1492, 1200, 576})
                     .option(RakChannelOption.RAK_CLIENT_INTERNAL_ADDRESSES, 20)
                     .option(RakChannelOption.RAK_TIME_BETWEEN_SEND_CONNECTION_ATTEMPTS_MS, 500)
                     .option(RakChannelOption.RAK_GUID, ThreadLocalRandom.current().nextLong())
@@ -215,8 +292,12 @@ public class GiBot {
             ChannelFuture future = bootstrap.connect(targetAddress).sync();
             Channel channel = future.channel();
 
+            final Socks5UdpRelay relayToClose = socks5Relay;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
+                    if (relayToClose != null) {
+                        relayToClose.close();
+                    }
                     channel.close().sync();
                     eventLoopGroup.shutdownGracefully().sync();
                 } catch (Exception ignored) {
@@ -235,6 +316,10 @@ public class GiBot {
             }
             log.error("Fatal error in GiBot", e);
             System.exit(1);
+        } finally {
+            if (socks5Relay != null) {
+                socks5Relay.close();
+            }
         }
     }
 }

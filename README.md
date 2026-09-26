@@ -21,6 +21,7 @@ GiBot supports 3 core actions:
 
 | Flag | Description |
 | :--- | :--- |
+| `-p`, `--proxy <url>` | Route connections through HTTP or SOCKS5 proxy (supports UDP relay on SOCKS5) |
 | `-j`, `--json` | Output results in machine-readable JSON format (ideal for external processes) |
 | `-v`, `--verbose` | Output full connection and debug logs |
 

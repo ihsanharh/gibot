@@ -310,6 +310,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         IDLE,
         SEARCHING_SUBMENUS,
         SELECTING_ITEM,
+        SELECTING_GIFT_METHOD,
         ENTERING_USERNAME,
         CONFIRMING_GIFT,
         FINISHED
@@ -555,11 +556,24 @@ public class BotPacketHandler implements BedrockPacketHandler {
             JsonObject root = JsonParser.parseString(rawJson).getAsJsonObject();
             String formType = root.has("type") ? root.get("type").getAsString() : "";
             String formTitle = root.has("title") ? CatalogManager.cleanFormatting(root.get("title").getAsString()) : "";
+            String contentText = root.has("content") ? CatalogManager.cleanFormatting(root.get("content").getAsString()) : "";
 
-            log.info("Gift flow form metadata: type='{}', title='{}'", formType, formTitle);
+            log.info("Gift flow form metadata: step={}, type='{}', title='{}'", giftStep, formType, formTitle);
 
-            // Step 1: After clicking item, Hive asks how you want to gift (Friend, Username, Hub, Self)
-            if (giftStep == GiftStep.SELECTING_ITEM && "form".equalsIgnoreCase(formType)) {
+            // Step A: Hive cost proceeding modal ("This gift costs X tokens... Do you wish to proceed?")
+            // Hive shows this immediately after clicking an item in the store!
+            if ("modal".equalsIgnoreCase(formType) && (giftStep == GiftStep.SELECTING_ITEM || contentText.toLowerCase().contains("do you wish to proceed") || contentText.toLowerCase().contains("selecting and confirming a gifting method"))) {
+                String btn1 = root.has("button1") ? CatalogManager.cleanFormatting(root.get("button1").getAsString()) : "";
+                log.info("Cost proceed modal received: \"{}\" (button1='{}')", contentText, btn1);
+                log.info("Confirming cost to proceed to gift method selection...");
+                this.giftStep = GiftStep.SELECTING_GIFT_METHOD;
+                ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
+                return;
+            }
+
+            // Step B: Choose gift method ("Gift to a Username")
+            // Hive shows options: "Gift to a Friend", "Gift to a Username", "Place gift in the Hub", "Gift to Self"
+            if ("form".equalsIgnoreCase(formType) && (giftStep == GiftStep.SELECTING_ITEM || giftStep == GiftStep.SELECTING_GIFT_METHOD || contentText.toLowerCase().contains("decide using a button below") || contentText.toLowerCase().contains("gift to a username"))) {
                 JsonArray buttons = root.has("buttons") ? root.getAsJsonArray("buttons") : new JsonArray();
                 int usernameBtnIdx = -1;
                 for (int i = 0; i < buttons.size(); i++) {
@@ -569,13 +583,6 @@ public class BotPacketHandler implements BedrockPacketHandler {
                     if (lower.contains("username") || lower.contains("player") || lower.contains("gamertag")) {
                         usernameBtnIdx = i;
                         break;
-                    }
-                }
-
-                if (usernameBtnIdx == -1 && buttons.size() > 1) {
-                    String btn1Text = CatalogManager.cleanFormatting(buttons.get(1).getAsJsonObject().get("text").getAsString()).toLowerCase();
-                    if (!btn1Text.contains("self") && !btn1Text.contains("myself")) {
-                        usernameBtnIdx = 1; // Default to button 1 "Gift to a Username" if not self
                     }
                 }
 
@@ -592,97 +599,69 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 }
             }
 
-            // Step 2: Custom form requesting recipient username
-            if ("custom_form".equalsIgnoreCase(formType)) {
-                JsonArray content = root.has("content") ? root.getAsJsonArray("content") : new JsonArray();
-                JsonArray responseArray = new JsonArray();
-                boolean inputFilled = false;
+            // Step C: Custom form requesting recipient username
+            if ("custom_form".equalsIgnoreCase(formType) || giftStep == GiftStep.ENTERING_USERNAME) {
+                if ("custom_form".equalsIgnoreCase(formType)) {
+                    JsonArray content = root.has("content") ? root.getAsJsonArray("content") : new JsonArray();
+                    JsonArray responseArray = new JsonArray();
+                    boolean inputFilled = false;
 
-                for (int i = 0; i < content.size(); i++) {
-                    JsonObject elem = content.get(i).getAsJsonObject();
-                    String elemType = elem.has("type") ? elem.get("type").getAsString() : "";
-                    String elemText = elem.has("text") ? CatalogManager.cleanFormatting(elem.get("text").getAsString()) : "";
-                    log.info("Custom Form Element [{}]: type='{}', text='{}'", i, elemType, elemText);
+                    for (int i = 0; i < content.size(); i++) {
+                        JsonObject elem = content.get(i).getAsJsonObject();
+                        String elemType = elem.has("type") ? elem.get("type").getAsString() : "";
+                        String elemText = elem.has("text") ? CatalogManager.cleanFormatting(elem.get("text").getAsString()) : "";
+                        log.info("Custom Form Element [{}]: type='{}', text='{}'", i, elemType, elemText);
 
-                    if ("input".equalsIgnoreCase(elemType)) {
-                        log.info("Submitting recipient gamertag: '{}'", recipient);
-                        responseArray.add(recipient);
-                        inputFilled = true;
-                    } else {
-                        responseArray.add(JsonNull.INSTANCE);
-                    }
-                }
-
-                if (inputFilled) {
-                    this.giftStep = GiftStep.CONFIRMING_GIFT;
-                    String resp = responseArray.toString() + "\n";
-                    log.info("Sending username input response (Form ID {}): {}", packet.getFormId(), resp.trim());
-                    ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), resp), 150, TimeUnit.MILLISECONDS);
-                    // Safety timeout in case Hive does not respond to username input
-                    ticker.schedule(() -> {
-                        if (session.isConnected() && giftStep == GiftStep.CONFIRMING_GIFT && !exiting.get()) {
-                            outputFailure("Timed out waiting for server response.");
-                            disconnectAndExit(1);
+                        if ("input".equalsIgnoreCase(elemType)) {
+                            log.info("Submitting recipient gamertag: '{}'", recipient);
+                            responseArray.add(recipient);
+                            inputFilled = true;
+                        } else {
+                            responseArray.add(JsonNull.INSTANCE);
                         }
-                    }, 10000, TimeUnit.MILLISECONDS);
-                    return;
-                } else {
-                    outputFailure("No input field found in username form.");
-                    disconnectAndExit(1);
-                    return;
+                    }
+
+                    if (inputFilled) {
+                        this.giftStep = GiftStep.CONFIRMING_GIFT;
+                        String resp = responseArray.toString() + "\n";
+                        log.info("Sending username input response (Form ID {}): {}", packet.getFormId(), resp.trim());
+                        ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), resp), 150, TimeUnit.MILLISECONDS);
+                        // Safety timeout in case Hive does not respond to username input
+                        ticker.schedule(() -> {
+                            if (session.isConnected() && giftStep == GiftStep.CONFIRMING_GIFT && !exiting.get()) {
+                                outputFailure("Timed out waiting for server response.");
+                                disconnectAndExit(1);
+                            }
+                        }, 10000, TimeUnit.MILLISECONDS);
+                        return;
+                    } else {
+                        outputFailure("No input field found in username form.");
+                        disconnectAndExit(1);
+                        return;
+                    }
                 }
             }
 
-            // Step 3: Hive responds to username input (either error message or confirmation)
-            if ("modal".equalsIgnoreCase(formType)) {
-                String promptText = root.has("content") ? CatalogManager.cleanFormatting(root.get("content").getAsString()) : "";
-                log.info("Confirmation dialog received: title='{}', content='{}'", formTitle, promptText);
+            // Step D: Hive responds to username input (final error message or final confirmation)
+            if (giftStep == GiftStep.CONFIRMING_GIFT) {
+                if ("modal".equalsIgnoreCase(formType)) {
+                    String promptText = contentText;
+                    log.info("Final confirmation dialog received: title='{}', content='{}'", formTitle, promptText);
 
-                String lowerPrompt = promptText.toLowerCase();
-                String lowerTitle = formTitle.toLowerCase();
-                if (lowerPrompt.contains("already has") || lowerPrompt.contains("already owns")
-                        || lowerPrompt.contains("cannot") || lowerPrompt.contains("can't")
-                        || lowerPrompt.contains("not found") || lowerPrompt.contains("sorry")
-                        || lowerTitle.contains("error")) {
-                    log.warn("Hive modal rejection dialog: title='{}', prompt='{}'", formTitle, promptText);
-                    outputFailure(promptText.isBlank() ? formTitle : promptText);
-                    disconnectAndExit(1);
-                    return;
-                }
-
-                log.info("Submitting confirmation ('Yes' / true)...");
-                this.giftStep = GiftStep.CONFIRMING_GIFT;
-                ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
-                // Fallback in case chat packet doesn't arrive (wait up to 15s to capture all packets/forms)
-                ticker.schedule(() -> {
-                    if (session.isConnected()) {
-                        outputSuccess(String.format("Gift '%s' submitted for player '%s'.", targetItem, recipient));
-                        disconnectAndExit(0);
+                    String lowerPrompt = promptText.toLowerCase();
+                    String lowerTitle = formTitle.toLowerCase();
+                    if (lowerPrompt.contains("already has") || lowerPrompt.contains("already owns")
+                            || lowerPrompt.contains("cannot") || lowerPrompt.contains("can't")
+                            || lowerPrompt.contains("not found") || lowerPrompt.contains("sorry")
+                            || lowerTitle.contains("error")) {
+                        log.warn("Hive modal rejection dialog: title='{}', prompt='{}'", formTitle, promptText);
+                        outputFailure(promptText.isBlank() ? formTitle : promptText);
+                        disconnectAndExit(1);
+                        return;
                     }
-                }, 15000, TimeUnit.MILLISECONDS);
-                return;
-            } else if ("form".equalsIgnoreCase(formType)) {
-                JsonArray buttons = root.has("buttons") ? root.getAsJsonArray("buttons") : new JsonArray();
-                int confirmBtnIdx = -1;
-                for (int i = 0; i < buttons.size(); i++) {
-                    String btnText = CatalogManager.cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
-                    log.info("Form Button [{}]: '{}'", i, btnText);
-                    String lowerBtn = btnText.toLowerCase();
-                    if (lowerBtn.contains("confirm")
-                            || lowerBtn.contains("yes")
-                            || lowerBtn.contains("send gift")
-                            || lowerBtn.contains("gift")
-                            || lowerBtn.contains("buy")) {
-                        confirmBtnIdx = i;
-                        break;
-                    }
-                }
 
-                if (confirmBtnIdx != -1) {
-                    log.info("Found confirmation button at index {}. Confirming gift...", confirmBtnIdx);
-                    this.giftStep = GiftStep.CONFIRMING_GIFT;
-                    final int cIdx = confirmBtnIdx;
-                    ticker.schedule(() -> clickFormButton(packet.getFormId(), cIdx), 150, TimeUnit.MILLISECONDS);
+                    log.info("Submitting final gift confirmation ('Yes' / true)...");
+                    ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
                     // Fallback in case chat packet doesn't arrive (wait up to 15s to capture all packets/forms)
                     ticker.schedule(() -> {
                         if (session.isConnected()) {
@@ -691,13 +670,41 @@ public class BotPacketHandler implements BedrockPacketHandler {
                         }
                     }, 15000, TimeUnit.MILLISECONDS);
                     return;
-                } else {
-                    String content = root.has("content") ? CatalogManager.cleanFormatting(root.get("content").getAsString()) : "";
-                    String reason = !content.isBlank() ? content : (!formTitle.isBlank() ? formTitle : "Received form without confirmation button: " + rawJson);
-                    log.warn("Form rejected / no confirmation button found: {}", reason);
-                    outputFailure(reason);
-                    disconnectAndExit(1);
-                    return;
+                } else if ("form".equalsIgnoreCase(formType)) {
+                    JsonArray buttons = root.has("buttons") ? root.getAsJsonArray("buttons") : new JsonArray();
+                    int confirmBtnIdx = -1;
+                    for (int i = 0; i < buttons.size(); i++) {
+                        String btnText = CatalogManager.cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
+                        log.info("Final Confirmation Button [{}]: '{}'", i, btnText);
+                        String lowerBtn = btnText.toLowerCase();
+                        if (lowerBtn.contains("confirm")
+                                || lowerBtn.contains("yes")
+                                || lowerBtn.contains("send gift")
+                                || lowerBtn.contains("buy")) {
+                            confirmBtnIdx = i;
+                            break;
+                        }
+                    }
+
+                    if (confirmBtnIdx != -1) {
+                        log.info("Found confirmation button at index {}. Confirming gift...", confirmBtnIdx);
+                        final int cIdx = confirmBtnIdx;
+                        ticker.schedule(() -> clickFormButton(packet.getFormId(), cIdx), 150, TimeUnit.MILLISECONDS);
+                        // Fallback in case chat packet doesn't arrive (wait up to 15s to capture all packets/forms)
+                        ticker.schedule(() -> {
+                            if (session.isConnected()) {
+                                outputSuccess(String.format("Gift '%s' submitted for player '%s'.", targetItem, recipient));
+                                disconnectAndExit(0);
+                            }
+                        }, 15000, TimeUnit.MILLISECONDS);
+                        return;
+                    } else {
+                        String reason = !contentText.isBlank() ? contentText : (!formTitle.isBlank() ? formTitle : "Received form without confirmation button: " + rawJson);
+                        log.warn("Form rejected / no confirmation button found: {}", reason);
+                        outputFailure(reason);
+                        disconnectAndExit(1);
+                        return;
+                    }
                 }
             }
         } catch (Exception e) {

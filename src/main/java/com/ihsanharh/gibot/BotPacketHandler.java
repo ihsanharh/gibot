@@ -562,14 +562,18 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 for (int i = 0; i < buttons.size(); i++) {
                     String btnText = CatalogManager.cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
                     log.info("Gift Method Button [{}]: '{}'", i, btnText);
-                    if (btnText.toLowerCase().contains("username")) {
+                    String lower = btnText.toLowerCase();
+                    if (lower.contains("username") || lower.contains("player") || lower.contains("gamertag")) {
                         usernameBtnIdx = i;
                         break;
                     }
                 }
 
                 if (usernameBtnIdx == -1 && buttons.size() > 1) {
-                    usernameBtnIdx = 1; // Default to button 1 "Gift to a Username"
+                    String btn1Text = CatalogManager.cleanFormatting(buttons.get(1).getAsJsonObject().get("text").getAsString()).toLowerCase();
+                    if (!btn1Text.contains("self") && !btn1Text.contains("myself")) {
+                        usernameBtnIdx = 1; // Default to button 1 "Gift to a Username" if not self
+                    }
                 }
 
                 if (usernameBtnIdx != -1) {
@@ -579,7 +583,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                     ticker.schedule(() -> clickFormButton(packet.getFormId(), uIdx), 150, TimeUnit.MILLISECONDS);
                     return;
                 } else {
-                    outputFailure("Could not find 'Gift to a Username' option on server.");
+                    outputFailure("Could not find 'Gift to a Username' option on server. Buttons: " + buttons);
                     disconnectAndExit(1);
                     return;
                 }
@@ -629,7 +633,20 @@ public class BotPacketHandler implements BedrockPacketHandler {
             // Step 3: Hive responds to username input (either error message or confirmation)
             if ("modal".equalsIgnoreCase(formType)) {
                 String promptText = root.has("content") ? CatalogManager.cleanFormatting(root.get("content").getAsString()) : "";
-                log.info("Confirmation dialog received: \"{}\"", promptText);
+                log.info("Confirmation dialog received: title='{}', content='{}'", formTitle, promptText);
+
+                String lowerPrompt = promptText.toLowerCase();
+                String lowerTitle = formTitle.toLowerCase();
+                if (lowerPrompt.contains("already has") || lowerPrompt.contains("already owns")
+                        || lowerPrompt.contains("cannot") || lowerPrompt.contains("can't")
+                        || lowerPrompt.contains("not found") || lowerPrompt.contains("sorry")
+                        || lowerTitle.contains("error")) {
+                    log.warn("Hive modal rejection dialog: title='{}', prompt='{}'", formTitle, promptText);
+                    outputFailure(promptText.isBlank() ? formTitle : promptText);
+                    disconnectAndExit(1);
+                    return;
+                }
+
                 log.info("Submitting confirmation ('Yes' / true)...");
                 this.giftStep = GiftStep.CONFIRMING_GIFT;
                 ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
@@ -647,17 +664,15 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 for (int i = 0; i < buttons.size(); i++) {
                     String btnText = CatalogManager.cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
                     log.info("Form Button [{}]: '{}'", i, btnText);
-                    if (btnText.toLowerCase().contains("confirm")
-                            || btnText.toLowerCase().contains("yes")
-                            || btnText.toLowerCase().contains("send gift")
-                            || btnText.toLowerCase().contains("gift")
-                            || btnText.toLowerCase().contains("buy")) {
+                    String lowerBtn = btnText.toLowerCase();
+                    if (lowerBtn.contains("confirm")
+                            || lowerBtn.contains("yes")
+                            || lowerBtn.contains("send gift")
+                            || lowerBtn.contains("gift")
+                            || lowerBtn.contains("buy")) {
                         confirmBtnIdx = i;
                         break;
                     }
-                }
-                if (confirmBtnIdx == -1 && buttons.size() > 0) {
-                    confirmBtnIdx = 0;
                 }
 
                 if (confirmBtnIdx != -1) {
@@ -674,7 +689,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
                     }, 4000, TimeUnit.MILLISECONDS);
                     return;
                 } else {
-                    outputFailure("Received form without confirmation button: " + rawJson);
+                    String content = root.has("content") ? CatalogManager.cleanFormatting(root.get("content").getAsString()) : "";
+                    String reason = !content.isBlank() ? content : (!formTitle.isBlank() ? formTitle : "Received form without confirmation button: " + rawJson);
+                    log.warn("Form rejected / no confirmation button found: {}", reason);
+                    outputFailure(reason);
                     disconnectAndExit(1);
                     return;
                 }
@@ -765,13 +783,21 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     @Override
     public PacketSignal handle(TextPacket packet) {
+        log.info("Server TextPacket [type={}]: {}", packet.getType(), packet.getMessage());
         if (packet.getType() == TextPacket.Type.CHAT) return PacketSignal.HANDLED;
 
         if (mode == GiBot.BotMode.GIFT && giftStep != GiftStep.IDLE && giftStep != GiftStep.FINISHED) {
-            String msg = packet.getMessage();
+            String msg = packet.getMessage() != null ? packet.getMessage().toString() : "";
             String clean = CatalogManager.cleanFormatting(msg).toLowerCase();
 
-            if (clean.contains("sorry, we can't find a player named") || clean.contains("already has the")) {
+            if (clean.contains("sorry, we can't find a player named")
+                    || clean.contains("can't find a player")
+                    || clean.contains("already has")
+                    || clean.contains("already owns")
+                    || clean.contains("cannot receive")
+                    || clean.contains("not eligible")
+                    || clean.contains("cannot be gifted")
+                    || clean.contains("failed to gift")) {
                 log.info("Hive chat rejection: {}", msg);
                 outputFailure(CatalogManager.cleanFormatting(msg));
                 disconnectAndExit(1);

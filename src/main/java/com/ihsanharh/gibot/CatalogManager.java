@@ -90,9 +90,7 @@ public class CatalogManager {
             for (int i = 0; i < buttons.size(); i++) {
                 String btnText = cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
                 String line0 = btnText.split("\n")[0].trim();
-                if (TOKEN_AVAIL_PATTERN.matcher(btnText).find()
-                        || line0.equalsIgnoreCase("Buy Gifts")
-                        || line0.toLowerCase().startsWith("buy gifts")) {
+                if (TOKEN_AVAIL_PATTERN.matcher(btnText).find() || line0.equals("Buy Gifts")) {
                     isMainForm = true;
                     break;
                 }
@@ -108,7 +106,7 @@ public class CatalogManager {
                 if (buttons.size() == 1) {
                     String btn0 = cleanFormatting(buttons.get(0).getAsJsonObject().get("text").getAsString());
                     String line0 = btn0.split("\n")[0].trim();
-                    if (line0.equalsIgnoreCase("Buy Gifts") || line0.toLowerCase().startsWith("buy gifts")) {
+                    if (line0.equals("Buy Gifts")) {
                         onlyBuyGiftsButton = true;
                     }
                 }
@@ -173,12 +171,12 @@ public class CatalogManager {
                     String[] lines = clean.split("\n");
                     String btnName = lines[0].replaceFirst("(?i)^NEW\\s+", "").trim();
 
-                    if (btnName.toLowerCase().contains("go back")) {
+                    if (btnName.equals("Go back")) {
                         backIdx = i;
                         continue;
                     }
 
-                    if (btnName.toLowerCase().contains("search")) {
+                    if (btnName.equals("Search")) {
                         continue;
                     }
 
@@ -202,7 +200,7 @@ public class CatalogManager {
                         info.getItems().add(entry);
                     }
                 }
-                info.setGoBackButtonIndex(backIdx != -1 ? backIdx : (buttons.size() > 0 ? buttons.size() - 1 : -1));
+                info.setGoBackButtonIndex(backIdx);
             }
         } catch (Exception e) {
             log.error("Error processing modal form JSON", e);

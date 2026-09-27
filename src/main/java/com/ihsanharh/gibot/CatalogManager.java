@@ -23,7 +23,8 @@ import java.util.regex.Pattern;
 @Log4j2
 public class CatalogManager {
     private static final Pattern MINECRAFT_FORMATTING = Pattern.compile("(?i)§[0-9a-z]");
-    private static final Pattern TOKEN_AVAIL_PATTERN = Pattern.compile("(\\d+)\\s+Gift Tokens?\\s+Available", Pattern.CASE_INSENSITIVE);
+    private static final Pattern GENERAL_TOKEN_AVAIL_PATTERN = Pattern.compile("(\\d+)\\s+Gift Tokens?\\s+Available", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CATEGORY_TOKEN_AVAIL_PATTERN = Pattern.compile("(\\d+)\\s+(?:Gift Tokens?\\s+)?Available", Pattern.CASE_INSENSITIVE);
     private static final Pattern DIRECT_COST_PATTERN = Pattern.compile("\\((\\d+)(?:-(\\d+))?\\s+tokens?\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SUB_ITEM_COST_PATTERN = Pattern.compile("(\\d+)\\s+Tokens?", Pattern.CASE_INSENSITIVE);
     private static final Pattern STOCK_PATTERN = Pattern.compile("(\\d+)\\s+Available", Pattern.CASE_INSENSITIVE);
@@ -44,6 +45,8 @@ public class CatalogManager {
     public static class CatalogData {
         private String accountName = "Unknown";
         private int accountTokenBalance = 0;
+        private Map<String, Integer> categoryTokens = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        private Map<String, String> categoryImages = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         private Map<String, ItemEntry> items = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     }
 
@@ -90,7 +93,7 @@ public class CatalogManager {
             for (int i = 0; i < buttons.size(); i++) {
                 String btnText = cleanFormatting(buttons.get(i).getAsJsonObject().get("text").getAsString());
                 String line0 = btnText.split("\n")[0].trim();
-                if (TOKEN_AVAIL_PATTERN.matcher(btnText).find() || line0.equals("Buy Gifts")) {
+                if (CATEGORY_TOKEN_AVAIL_PATTERN.matcher(btnText).find() || line0.equals("Buy Gifts")) {
                     isMainForm = true;
                     break;
                 }
@@ -124,9 +127,9 @@ public class CatalogManager {
                     String[] lines = clean.split("\n");
                     String btnName = lines[0].replaceFirst("(?i)^NEW\\s+", "").trim();
 
-                    Matcher tokenAvail = TOKEN_AVAIL_PATTERN.matcher(clean);
-                    if (tokenAvail.find()) {
-                        int balance = Integer.parseInt(tokenAvail.group(1));
+                    Matcher generalTokenAvail = GENERAL_TOKEN_AVAIL_PATTERN.matcher(clean);
+                    if (generalTokenAvail.find()) {
+                        int balance = Integer.parseInt(generalTokenAvail.group(1));
                         this.data.setAccountTokenBalance(balance);
                         info.setTokenBalance(balance);
                         if (balance == 0) {
@@ -134,11 +137,22 @@ public class CatalogManager {
                         }
                     }
 
+                    Matcher categoryTokenAvail = CATEGORY_TOKEN_AVAIL_PATTERN.matcher(clean);
+                    if (categoryTokenAvail.find()) {
+                        int balance = Integer.parseInt(categoryTokenAvail.group(1));
+                        info.getCategoryTokens().put(btnName, balance);
+                        this.data.getCategoryTokens().put(btnName, balance);
+                    }
+
                     if (btnName.toLowerCase().contains("buy gifts")) {
                         continue;
                     }
 
                     String imageUrl = extractImageUrl(buttons.get(i));
+                    if (imageUrl != null && !imageUrl.isBlank()) {
+                        info.getCategoryImages().put(btnName, imageUrl);
+                        this.data.getCategoryImages().put(btnName, imageUrl);
+                    }
 
                     Matcher directCost = DIRECT_COST_PATTERN.matcher(clean);
                     if (directCost.find()) {
@@ -171,34 +185,45 @@ public class CatalogManager {
                     String[] lines = clean.split("\n");
                     String btnName = lines[0].replaceFirst("(?i)^NEW\\s+", "").trim();
 
-                    if (btnName.equals("Go back")) {
+                    if (btnName.equalsIgnoreCase("Go back")) {
                         backIdx = i;
                         continue;
                     }
 
-                    if (btnName.equals("Search")) {
+                    if (btnName.equalsIgnoreCase("Search")) {
                         continue;
                     }
 
                     Matcher itemCost = SUB_ITEM_COST_PATTERN.matcher(clean);
+                    Matcher directCost = DIRECT_COST_PATTERN.matcher(clean);
+                    int cost = 1;
+                    int maxCost = 1;
                     if (itemCost.find()) {
-                        int cost = Integer.parseInt(itemCost.group(1));
-                        Matcher stockMatch = STOCK_PATTERN.matcher(clean);
-                        Integer stock = stockMatch.find() ? Integer.parseInt(stockMatch.group(1)) : null;
-
-                        String imageUrl = extractImageUrl(buttons.get(i));
-
-                        ItemEntry entry = new ItemEntry();
-                        entry.setName(btnName);
-                        entry.setCategory(category.isEmpty() ? "Subcategory" : category);
-                        entry.setTokenCost(cost);
-                        entry.setTokenCostMax(cost);
-                        entry.setStock(stock);
-                        entry.setImageUrl(imageUrl);
-
-                        this.data.getItems().put(btnName, entry);
-                        info.getItems().add(entry);
+                        cost = Integer.parseInt(itemCost.group(1));
+                        maxCost = cost;
+                    } else if (directCost.find()) {
+                        cost = Integer.parseInt(directCost.group(1));
+                        maxCost = directCost.group(2) != null ? Integer.parseInt(directCost.group(2)) : cost;
                     }
+
+                    Matcher stockMatch = STOCK_PATTERN.matcher(clean);
+                    Integer stock = stockMatch.find() ? Integer.parseInt(stockMatch.group(1)) : null;
+
+                    String imageUrl = extractImageUrl(buttons.get(i));
+                    if (imageUrl == null || imageUrl.isBlank()) {
+                        imageUrl = this.data.getCategoryImages().get(category);
+                    }
+
+                    ItemEntry entry = new ItemEntry();
+                    entry.setName(btnName);
+                    entry.setCategory(category.isEmpty() ? "Subcategory" : category);
+                    entry.setTokenCost(cost);
+                    entry.setTokenCostMax(maxCost);
+                    entry.setStock(stock);
+                    entry.setImageUrl(imageUrl);
+
+                    this.data.getItems().put(btnName, entry);
+                    info.getItems().add(entry);
                 }
                 info.setGoBackButtonIndex(backIdx);
             }
@@ -343,12 +368,19 @@ public class CatalogManager {
         private boolean isMainForm = false;
         private boolean noTokens = false;
         private int tokenBalance = -1;
+        private final Map<String, Integer> categoryTokens = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        private final Map<String, String> categoryImages = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         private final List<SubcategoryButton> subcategories = new ArrayList<>();
         private final List<ItemEntry> items = new ArrayList<>();
         private int goBackButtonIndex = -1;
 
         public boolean hasNoGiftTokens() {
-            return noTokens || tokenBalance == 0;
+            if (noTokens) return true;
+            if (tokenBalance > 0) return false;
+            for (int bal : categoryTokens.values()) {
+                if (bal > 0) return false;
+            }
+            return tokenBalance == 0 && categoryTokens.isEmpty();
         }
     }
 }

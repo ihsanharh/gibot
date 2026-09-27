@@ -132,6 +132,8 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private int completedSubcategories = 0;
     private String activeSubcategory = null;
     private int cachedTokenBalance = -1;
+    private final java.util.Map<String, Integer> cachedCategoryTokens = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    private boolean searchedInCurrentSubcategory = false;
     private int targetItemCost = 0;
     private final AtomicBoolean exiting = new AtomicBoolean(false);
 
@@ -492,8 +494,14 @@ public class BotPacketHandler implements BedrockPacketHandler {
         this.lastFormId = packet.getFormId();
         log.info("RAW FORM RECEIVED [id={}]: {}", packet.getFormId(), rawJson);
         CatalogManager.ParsedFormInfo info = catalogManager.processForm(rawJson, account.getDisplayName(), activeSubcategory);
-        if (info != null && info.getTitle() != null && !info.getTitle().isBlank()) {
-            this.lastFormTitle = info.getTitle();
+        if (info != null) {
+            if (info.getTokenBalance() != -1) {
+                this.cachedTokenBalance = info.getTokenBalance();
+            }
+            this.cachedCategoryTokens.putAll(info.getCategoryTokens());
+            if (info.getTitle() != null && !info.getTitle().isBlank()) {
+                this.lastFormTitle = info.getTitle();
+            }
         }
         updateState("Received form '" + (lastFormTitle != null ? lastFormTitle : "unknown") + "' (id=" + packet.getFormId() + ")");
 
@@ -505,9 +513,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
         // --- FETCH MODE ---
         if (info.isMainForm()) {
             this.activeSubcategory = null;
+            this.searchedInCurrentSubcategory = false;
 
             // Checker: Account does not have any gift tokens (form returns only Buy Gifts)
-            if (info.hasNoGiftTokens() || (info.getTokenBalance() != -1 && info.getTokenBalance() <= 0)) {
+            if (info.hasNoGiftTokens()) {
                 log.warn("Account has no gift tokens! /gift form returned only 'Buy Gifts'.");
                 outputFailure("Account does not have any gift tokens!");
                 disconnectAndExit(1);
@@ -595,6 +604,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         if (info.getTokenBalance() != -1) {
             this.cachedTokenBalance = info.getTokenBalance();
         }
+        this.cachedCategoryTokens.putAll(info.getCategoryTokens());
 
         String rawJson = packet.getFormData();
         log.info("Gift flow form received: Form ID={} (step={})", packet.getFormId(), giftStep);
@@ -824,6 +834,49 @@ public class BotPacketHandler implements BedrockPacketHandler {
             }
 
             // =========================================================================
+            // SEARCH INPUT FORM
+            // In packet-logs:
+            // - Type: "custom_form"
+            // - Title: "Gifting"
+            // - Content contains: "search for available gifts"
+            // =========================================================================
+            if (formTitle.equals("Gifting") && "custom_form".equalsIgnoreCase(formType)
+                    && contentText.contains("search for available gifts")) {
+                JsonArray content = root.has("content") && root.get("content").isJsonArray()
+                        ? root.getAsJsonArray("content")
+                        : new JsonArray();
+                JsonArray responseArray = new JsonArray();
+                int inputIdx = -1;
+
+                for (int i = 0; i < content.size(); i++) {
+                    if (content.get(i).isJsonObject()) {
+                        JsonObject elem = content.get(i).getAsJsonObject();
+                        String elemType = elem.has("type") ? elem.get("type").getAsString() : "";
+                        if ("input".equalsIgnoreCase(elemType)) {
+                            responseArray.add(targetItem);
+                            inputIdx = i;
+                            continue;
+                        }
+                    }
+                    responseArray.add(JsonNull.INSTANCE);
+                }
+
+                if (inputIdx != -1) {
+                    log.info("[STRICT VALIDATION] Matched Search Input Form: Title='{}', Content verified. Submitting search query '{}' at input index {}...", formTitle, targetItem, inputIdx);
+                    updateState(GiftStep.SEARCHING_SUBMENUS, "Submitted search term '" + targetItem + "' in subcategory '" + activeSubcategory + "'");
+                    String resp = responseArray.toString() + "\n";
+                    ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), resp), 150, TimeUnit.MILLISECONDS);
+                    return;
+                } else {
+                    log.error("[STRICT VALIDATION FAILED] Search Input Form has no input element.");
+                    outputFailure("No input field found in search form.");
+                    sendModalFormResponse(packet.getFormId(), "null");
+                    disconnectAndExit(1);
+                    return;
+                }
+            }
+
+            // =========================================================================
             // 7. SUBCATEGORY MENU FORM
             // In packet-logs:
             // - Type: "form"
@@ -851,13 +904,25 @@ public class BotPacketHandler implements BedrockPacketHandler {
                         final int btnIdx = itemBtnIndex;
                         ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
                         return;
-                    } else {
-                        log.info("[STRICT VALIDATION] Wanted item '{}' not in subcategory '{}'. Found 'Go back' at index {}. Returning to search next subcategory...", targetItem, activeSubcategory, backBtnIndex);
-                        updateState(GiftStep.SEARCHING_SUBMENUS, "Item '" + targetItem + "' not in subcategory '" + activeSubcategory + "', clicking 'Go back'");
-                        final int bIdx = backBtnIndex;
-                        ticker.schedule(() -> clickFormButton(packet.getFormId(), bIdx), 150, TimeUnit.MILLISECONDS);
+                    }
+
+                    // Item not found directly in this subcategory. Check if 'Search' button is present and not yet searched
+                    int searchBtnIndex = findButtonByExactText(root, "Search");
+                    if (searchBtnIndex != -1 && !searchedInCurrentSubcategory) {
+                        log.info("[STRICT VALIDATION] Item '{}' not found directly in subcategory '{}'. Found 'Search' button at index {}. Clicking to search...",
+                                targetItem, activeSubcategory, searchBtnIndex);
+                        searchedInCurrentSubcategory = true;
+                        updateState(GiftStep.SEARCHING_SUBMENUS, "Searching for '" + targetItem + "' in subcategory '" + activeSubcategory + "'");
+                        final int sIdx = searchBtnIndex;
+                        ticker.schedule(() -> clickFormButton(packet.getFormId(), sIdx), 150, TimeUnit.MILLISECONDS);
                         return;
                     }
+
+                    log.info("[STRICT VALIDATION] Wanted item '{}' not in subcategory '{}'. Found 'Go back' at index {}. Returning to search next subcategory...", targetItem, activeSubcategory, backBtnIndex);
+                    updateState(GiftStep.SEARCHING_SUBMENUS, "Item '" + targetItem + "' not in subcategory '" + activeSubcategory + "', clicking 'Go back'");
+                    final int bIdx = backBtnIndex;
+                    ticker.schedule(() -> clickFormButton(packet.getFormId(), bIdx), 150, TimeUnit.MILLISECONDS);
+                    return;
                 }
             }
 
@@ -878,12 +943,14 @@ public class BotPacketHandler implements BedrockPacketHandler {
     }
 
     private void handleGiftMainForm(ModalFormRequestPacket packet, CatalogManager.ParsedFormInfo info) {
+        this.searchedInCurrentSubcategory = false;
         if (info.getTokenBalance() != -1) {
             this.cachedTokenBalance = info.getTokenBalance();
         }
+        this.cachedCategoryTokens.putAll(info.getCategoryTokens());
 
         // Checker: Account does not have any gift tokens (form returns only Buy Gifts)
-        if (info.hasNoGiftTokens() || (cachedTokenBalance != -1 && cachedTokenBalance <= 0)) {
+        if (info.hasNoGiftTokens()) {
             log.warn("[STRICT VALIDATION] Account has no gift tokens! /gift form returned only 'Buy Gifts'. Cannot gift '{}' to '{}'.", targetItem, recipient);
             outputFailure("Account does not have any gift tokens!");
             disconnectAndExit(1);
@@ -895,6 +962,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if (!giftSearchQueue.isEmpty()) {
                 CatalogManager.SubcategoryButton nextSub = giftSearchQueue.poll();
                 this.activeSubcategory = nextSub.getName();
+                this.searchedInCurrentSubcategory = false;
 
                 // Lookup by name to avoid stale indices
                 int targetBtnIndex = -1;
@@ -967,6 +1035,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         this.giftStep = GiftStep.SEARCHING_SUBMENUS;
         CatalogManager.SubcategoryButton firstSub = giftSearchQueue.poll();
         this.activeSubcategory = firstSub.getName();
+        this.searchedInCurrentSubcategory = false;
 
         int firstIdx = -1;
         for (CatalogManager.SubcategoryButton sub : info.getSubcategories()) {
@@ -1019,17 +1088,30 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private boolean checkItemBalance(CatalogManager.ParsedFormInfo info, String itemName) {
         if (itemName == null) return false;
         String query = itemName.trim();
+        int cost = 1;
         for (CatalogManager.ItemEntry item : info.getItems()) {
             if (item.getName().equalsIgnoreCase(query)) {
-                this.targetItemCost = item.getTokenCost();
-                if (cachedTokenBalance != -1 && item.getTokenCost() > 0 && cachedTokenBalance < item.getTokenCost()) {
-                    outputFailure(String.format("Insufficient tokens! Available: %d, Required: %d.",
-                            cachedTokenBalance, item.getTokenCost()));
-                    disconnectAndExit(1);
-                    return true;
-                }
+                cost = item.getTokenCost();
                 break;
             }
+        }
+        this.targetItemCost = cost;
+
+        int availableBalance = -1;
+        if (activeSubcategory != null && cachedCategoryTokens.containsKey(activeSubcategory)) {
+            availableBalance = cachedCategoryTokens.get(activeSubcategory);
+        } else if (cachedTokenBalance != -1) {
+            availableBalance = cachedTokenBalance;
+        }
+
+        if (availableBalance != -1 && cost > 0 && availableBalance < cost) {
+            String catMsg = (activeSubcategory != null && !activeSubcategory.isBlank())
+                    ? " in " + activeSubcategory
+                    : "";
+            outputFailure(String.format("Insufficient tokens%s! Available: %d, Required: %d.",
+                    catMsg, availableBalance, cost));
+            disconnectAndExit(1);
+            return true;
         }
         return false;
     }

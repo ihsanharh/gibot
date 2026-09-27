@@ -92,10 +92,48 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     private volatile boolean pendingTeleport = false;
 
+    public enum GiftStep {
+        CONNECTING,
+        SPAWNING,
+        IDLE,
+        SEARCHING_SUBMENUS,
+        SELECTING_ITEM,
+        SELECTING_GIFT_METHOD,
+        ENTERING_USERNAME,
+        AWAITING_CONFIRMATION_MODAL,
+        CONFIRMING_GIFT,
+        AWAITING_COMPLETION,
+        FINISHED
+    }
+
     private final ScheduledExecutorService ticker = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean spawned = new AtomicBoolean(false);
     private final boolean jsonOutput;
     private final AtomicBoolean outputPrinted = new AtomicBoolean(false);
+
+    private final long startTimeMs;
+    private volatile long lastActionTimeMs;
+    private volatile String lastActionDescription;
+    private volatile int lastFormId = -1;
+    private volatile String lastFormTitle = null;
+    private volatile String lastFormType = null;
+    private volatile String lastServerMessage = null;
+    private ScheduledFuture<?> watchdogTask = null;
+
+    private GiftStep giftStep = GiftStep.CONNECTING;
+    private ScheduledFuture<?> usernameTimeoutTask = null;
+    private ScheduledFuture<?> giftRetryTask = null;
+    private int giftCommandAttempts = 0;
+    private final Queue<CatalogManager.SubcategoryButton> giftSearchQueue = new LinkedList<>();
+    private final Queue<CatalogManager.SubcategoryButton> crawlQueue = new LinkedList<>();
+    private CatalogManager.SubcategoryButton currentCrawlingSubcategory = null;
+    private boolean crawlInProgress = false;
+    private int totalSubcategoriesToCrawl = 0;
+    private int completedSubcategories = 0;
+    private String activeSubcategory = null;
+    private int cachedTokenBalance = -1;
+    private int targetItemCost = 0;
+    private final AtomicBoolean exiting = new AtomicBoolean(false);
 
     public BotPacketHandler(BedrockClientSession session, Account account, SocketAddress serverAddress, CatalogManager catalogManager, GiBot.BotMode mode, String recipient, String targetItem, boolean jsonOutput) {
         this.session = session;
@@ -106,10 +144,101 @@ public class BotPacketHandler implements BedrockPacketHandler {
         this.recipient = recipient;
         this.targetItem = targetItem;
         this.jsonOutput = jsonOutput;
+        this.startTimeMs = System.currentTimeMillis();
+        this.lastActionTimeMs = this.startTimeMs;
+        this.lastActionDescription = "Session initialized, awaiting network settings";
+        this.giftStep = GiftStep.CONNECTING;
+
+        // Safety watchdog: auto-terminate after 3 minutes (180s) max if not already finished.
+        // Started right at session initialization to cover slow proxies, handshakes, or in-game stalls.
+        this.watchdogTask = ticker.schedule(() -> {
+            if (!exiting.get()) {
+                log.warn("Bot execution watchdog reached (3 minutes / 180s limit). Disconnecting... Last state: {}", getLastKnownStateSummary());
+                outputFailure(String.format("Gifting timed out: Watchdog limit (3 minutes) reached. Last state: %s",
+                        getLastKnownStateSummary()));
+                disconnectAndExit(1);
+            }
+        }, 180, TimeUnit.SECONDS);
+    }
+
+    public void updateState(String action) {
+        this.lastActionDescription = action;
+        this.lastActionTimeMs = System.currentTimeMillis();
+        log.debug("State update: step={}, action='{}'", giftStep, action);
+    }
+
+    public void updateState(GiftStep step, String action) {
+        this.giftStep = step;
+        this.lastActionDescription = action;
+        this.lastActionTimeMs = System.currentTimeMillis();
+        log.debug("State update: step={}, action='{}'", step, action);
+    }
+
+    public JsonObject getLastKnownStateJson() {
+        JsonObject state = new JsonObject();
+        state.addProperty("step", giftStep != null ? giftStep.name() : "UNKNOWN");
+        state.addProperty("lastAction", lastActionDescription != null ? lastActionDescription : "None");
+        long now = System.currentTimeMillis();
+        state.addProperty("elapsedSeconds", (now - startTimeMs) / 1000);
+        state.addProperty("timeSinceLastActionSeconds", (now - lastActionTimeMs) / 1000);
+        if (lastFormId != -1) {
+            state.addProperty("lastFormId", lastFormId);
+        }
+        if (lastFormTitle != null) {
+            state.addProperty("lastFormTitle", lastFormTitle);
+        }
+        if (lastFormType != null) {
+            state.addProperty("lastFormType", lastFormType);
+        }
+        if (activeSubcategory != null) {
+            state.addProperty("activeSubcategory", activeSubcategory);
+        }
+        state.addProperty("giftCommandAttempts", giftCommandAttempts);
+        if (cachedTokenBalance != -1) {
+            state.addProperty("availableTokens", cachedTokenBalance);
+        }
+        if (targetItemCost > 0) {
+            state.addProperty("requiredTokens", targetItemCost);
+        }
+        if (lastServerMessage != null && !lastServerMessage.isBlank()) {
+            state.addProperty("lastServerMessage", lastServerMessage);
+        }
+        if (recipient != null) {
+            state.addProperty("recipient", recipient);
+        }
+        if (targetItem != null) {
+            state.addProperty("targetItem", targetItem);
+        }
+        return state;
+    }
+
+    public String getLastKnownStateSummary() {
+        long elapsed = (System.currentTimeMillis() - startTimeMs) / 1000;
+        long sinceAction = (System.currentTimeMillis() - lastActionTimeMs) / 1000;
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("step=%s, lastAction='%s' (%ds ago, total elapsed %ds)",
+                giftStep, lastActionDescription != null ? lastActionDescription : "None", sinceAction, elapsed));
+        if (lastFormId != -1) {
+            sb.append(String.format(", form=[id=%d, title='%s', type='%s']",
+                    lastFormId, lastFormTitle != null ? lastFormTitle : "", lastFormType != null ? lastFormType : ""));
+        }
+        if (activeSubcategory != null) {
+            sb.append(String.format(", subcategory='%s'", activeSubcategory));
+        }
+        sb.append(String.format(", /gift attempts=%d", giftCommandAttempts));
+        if (cachedTokenBalance != -1) {
+            sb.append(String.format(", tokens=%d", cachedTokenBalance));
+        }
+        if (lastServerMessage != null && !lastServerMessage.isBlank()) {
+            sb.append(String.format(", lastServerMsg='%s'", lastServerMessage));
+        }
+        return sb.toString();
     }
 
     public void outputSuccess(String message) {
         if (!outputPrinted.compareAndSet(false, true)) return;
+        this.giftStep = GiftStep.FINISHED;
+        updateState(GiftStep.FINISHED, "Gifting completed successfully: " + message);
         int remainingTokens = -1;
         if (cachedTokenBalance != -1) {
             int cost = (targetItemCost > 0) ? targetItemCost : 1;
@@ -128,6 +257,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 }
             }
             obj.addProperty("message", message);
+            obj.add("lastState", getLastKnownStateJson());
             System.out.println(obj.toString());
         } else {
             if (mode == GiBot.BotMode.GIFT && remainingTokens != -1) {
@@ -140,13 +270,21 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     public void outputFailure(String error) {
         if (!outputPrinted.compareAndSet(false, true)) return;
+        updateState("Failure: " + error);
         if (jsonOutput) {
             JsonObject obj = new JsonObject();
             obj.addProperty("status", "error");
             obj.addProperty("message", error);
+            if (cachedTokenBalance != -1) {
+                obj.addProperty("availableTokens", cachedTokenBalance);
+            }
+            if (targetItemCost > 0) {
+                obj.addProperty("requiredTokens", targetItemCost);
+            }
+            obj.add("lastState", getLastKnownStateJson());
             System.out.println(obj.toString());
         } else {
-            System.out.println("Failed: " + error);
+            System.out.println(String.format("Failed: %s [Last state: %s]", error, getLastKnownStateSummary()));
         }
     }
 
@@ -172,6 +310,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
             login.setClientJwt(skinJwt);
 
             log.info("Sending LoginPacket with protocol version {}", protocolVersion);
+            updateState("Received NetworkSettings, sent LoginPacket (protocol " + protocolVersion + ")");
             session.sendPacketImmediately(login);
         } catch (Exception e) {
             log.error("Failed to construct or send LoginPacket", e);
@@ -200,6 +339,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
             session.enableEncryption(secretKey);
             log.info("Session encryption successfully established.");
+            updateState("Session encryption enabled, sent ClientToServerHandshake");
         } catch (Exception e) {
             log.error("Failed to enable encryption", e);
             session.disconnect("Encryption handshake failed");
@@ -216,11 +356,13 @@ public class BotPacketHandler implements BedrockPacketHandler {
         log.info("Server PlayStatus: {}", packet.getStatus());
 
         if (packet.getStatus() == PlayStatusPacket.Status.LOGIN_SUCCESS) {
+            updateState("PlayStatus LOGIN_SUCCESS received, sent ClientCacheStatusPacket");
             ClientCacheStatusPacket cacheStatus = new ClientCacheStatusPacket();
             cacheStatus.setSupported(false);
             session.sendPacketImmediately(cacheStatus);
         } else if (packet.getStatus() == PlayStatusPacket.Status.PLAYER_SPAWN) {
             log.info("Bot spawned in world.");
+            updateState(GiftStep.IDLE, "Spawned in world, initialized player, starting keepalive ticker");
 
             SetLocalPlayerAsInitializedPacket initializedPacket = new SetLocalPlayerAsInitializedPacket();
             initializedPacket.setRuntimeEntityId(this.runtimeEntityId);
@@ -238,6 +380,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     @Override
     public PacketSignal handle(ResourcePacksInfoPacket packet) {
+        updateState("ResourcePacksInfo received, sent HAVE_ALL_PACKS response");
         ResourcePackClientResponsePacket response = new ResourcePackClientResponsePacket();
         response.setStatus(ResourcePackClientResponsePacket.Status.HAVE_ALL_PACKS);
         session.sendPacketImmediately(response);
@@ -246,6 +389,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     @Override
     public PacketSignal handle(ResourcePackStackPacket packet) {
+        updateState("ResourcePackStack received, sent COMPLETED pack response");
         ResourcePackClientResponsePacket response = new ResourcePackClientResponsePacket();
         response.setStatus(ResourcePackClientResponsePacket.Status.COMPLETED);
         session.sendPacketImmediately(response);
@@ -270,6 +414,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         }
 
         log.info("Received StartGamePacket: entityId={}", runtimeEntityId);
+        updateState(GiftStep.SPAWNING, "StartGame received (entityId=" + runtimeEntityId + "), loading chunks");
 
         RequestChunkRadiusPacket chunkRadius = new RequestChunkRadiusPacket();
         chunkRadius.setRadius(1);
@@ -310,39 +455,28 @@ public class BotPacketHandler implements BedrockPacketHandler {
         return PacketSignal.HANDLED;
     }
 
-    public enum GiftStep {
-        IDLE,
-        SEARCHING_SUBMENUS,
-        SELECTING_ITEM,
-        SELECTING_GIFT_METHOD,
-        ENTERING_USERNAME,
-        AWAITING_CONFIRMATION_MODAL,
-        CONFIRMING_GIFT,
-        AWAITING_COMPLETION,
-        FINISHED
-    }
-
-    private GiftStep giftStep = GiftStep.IDLE;
-    private ScheduledFuture<?> usernameTimeoutTask = null;
-    private final Queue<CatalogManager.SubcategoryButton> giftSearchQueue = new LinkedList<>();
-    private final Queue<CatalogManager.SubcategoryButton> crawlQueue = new LinkedList<>();
-    private CatalogManager.SubcategoryButton currentCrawlingSubcategory = null;
-    private boolean crawlInProgress = false;
-    private int totalSubcategoriesToCrawl = 0;
-    private int completedSubcategories = 0;
-    private String activeSubcategory = null;
-    private int cachedTokenBalance = -1;
-    private int targetItemCost = 0;
-    private final AtomicBoolean exiting = new AtomicBoolean(false);
-
     public void disconnectAndExit(int exitCode) {
         if (!exiting.compareAndSet(false, true)) {
             return;
         }
-        log.info("Bot job finished. Disconnecting from server (exit code {})...", exitCode);
+        if (watchdogTask != null) {
+            watchdogTask.cancel(false);
+            watchdogTask = null;
+        }
+        if (giftRetryTask != null) {
+            giftRetryTask.cancel(false);
+            giftRetryTask = null;
+        }
+        if (usernameTimeoutTask != null) {
+            usernameTimeoutTask.cancel(false);
+            usernameTimeoutTask = null;
+        }
+        log.info("Bot job finished. Disconnecting from server (exit code {})... Last state: {}", exitCode, getLastKnownStateSummary());
         ticker.schedule(() -> {
             try {
-                session.disconnect("Job complete");
+                if (session != null) {
+                    session.disconnect("Job complete");
+                }
             } catch (Exception ignored) {}
             ticker.schedule(() -> System.exit(exitCode), 400, TimeUnit.MILLISECONDS);
         }, 300, TimeUnit.MILLISECONDS);
@@ -350,9 +484,18 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     @Override
     public PacketSignal handle(ModalFormRequestPacket packet) {
+        if (giftRetryTask != null) {
+            giftRetryTask.cancel(false);
+            giftRetryTask = null;
+        }
         String rawJson = packet.getFormData();
+        this.lastFormId = packet.getFormId();
         log.info("RAW FORM RECEIVED [id={}]: {}", packet.getFormId(), rawJson);
         CatalogManager.ParsedFormInfo info = catalogManager.processForm(rawJson, account.getDisplayName(), activeSubcategory);
+        if (info != null && info.getTitle() != null && !info.getTitle().isBlank()) {
+            this.lastFormTitle = info.getTitle();
+        }
+        updateState("Received form '" + (lastFormTitle != null ? lastFormTitle : "unknown") + "' (id=" + packet.getFormId() + ")");
 
         if (mode == GiBot.BotMode.GIFT) {
             handleGiftFlow(packet, info);
@@ -546,6 +689,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 if (btn1.equals("Yes, Continue") && btn2.equals("Go back")) {
                     log.info("[STRICT VALIDATION] Matched Cost Warning Modal: Title='{}', Button 1='{}', Button 2='{}'. Content verified. Confirming cost proceed (true)...", formTitle, btn1, btn2);
                     this.giftStep = GiftStep.SELECTING_GIFT_METHOD;
+                    updateState(GiftStep.SELECTING_GIFT_METHOD, "Confirmed cost proceed warning modal ('Yes, Continue')");
                     ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
                     return;
                 } else {
@@ -571,6 +715,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 if (usernameBtnIdx != -1) {
                     log.info("[STRICT VALIDATION] Matched Delivery Method Form: Title='{}', Content verified. Found wanted button: 'Gift to a Username' at index {}.", formTitle, usernameBtnIdx);
                     this.giftStep = GiftStep.ENTERING_USERNAME;
+                    updateState(GiftStep.ENTERING_USERNAME, "Selected 'Gift to a Username' option");
                     final int uIdx = usernameBtnIdx;
                     ticker.schedule(() -> clickFormButton(packet.getFormId(), uIdx), 150, TimeUnit.MILLISECONDS);
                     return;
@@ -616,15 +761,17 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 if (inputIdx != -1) {
                     log.info("[STRICT VALIDATION] Matched Recipient Username Form: Title='{}', Content verified. Found input field at index {} for recipient '{}'. Submitting...", formTitle, inputIdx, recipient);
                     this.giftStep = GiftStep.AWAITING_CONFIRMATION_MODAL;
+                    updateState(GiftStep.AWAITING_CONFIRMATION_MODAL, "Submitted recipient username '" + recipient + "'");
                     String resp = responseArray.toString() + "\n";
                     ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), resp), 150, TimeUnit.MILLISECONDS);
 
                     usernameTimeoutTask = ticker.schedule(() -> {
                         if (session.isConnected() && giftStep == GiftStep.AWAITING_CONFIRMATION_MODAL && !exiting.get()) {
-                            outputFailure("Timed out waiting for server response after submitting username.");
+                            outputFailure(String.format("Timed out waiting for server response after submitting username '%s'. Last state: %s",
+                                    recipient, getLastKnownStateSummary()));
                             disconnectAndExit(1);
                         }
-                    }, 10000, TimeUnit.MILLISECONDS);
+                    }, 30000, TimeUnit.MILLISECONDS);
                     return;
                 } else {
                     log.error("[STRICT VALIDATION FAILED] Recipient Username Form has no input element.");
@@ -657,6 +804,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 if (btn1.equals("Send gift") && btn2.equals("Go back")) {
                     log.info("[STRICT VALIDATION] Matched Final Confirmation Modal: Title='{}', Content verified, Button 1='{}', Button 2='{}'. Submitting final confirmation...", formTitle, btn1, btn2);
                     this.giftStep = GiftStep.AWAITING_COMPLETION;
+                    updateState(GiftStep.AWAITING_COMPLETION, "Confirmed final 'Send gift' modal");
                     ticker.schedule(() -> sendModalFormResponse(packet.getFormId(), "true\n"), 150, TimeUnit.MILLISECONDS);
 
                     ticker.schedule(() -> {
@@ -664,7 +812,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                             outputSuccess(String.format("Gift '%s' submitted for player '%s'.", targetItem, recipient));
                             disconnectAndExit(0);
                         }
-                    }, 20000, TimeUnit.MILLISECONDS);
+                    }, 25000, TimeUnit.MILLISECONDS);
                     return;
                 } else {
                     log.error("[STRICT VALIDATION FAILED] Final confirmation modal missing expected buttons ('Send gift' / 'Go back'). Found: btn1='{}', btn2='{}'.", btn1, btn2);
@@ -699,11 +847,13 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
                         log.info("[STRICT VALIDATION] SUCCESS: Found wanted button for item '{}' at index {} in subcategory '{}'! Clicking to select...", this.targetItem, itemBtnIndex, activeSubcategory);
                         this.giftStep = GiftStep.SELECTING_ITEM;
+                        updateState(GiftStep.SELECTING_ITEM, "Found item '" + this.targetItem + "' in subcategory '" + activeSubcategory + "', clicking to select");
                         final int btnIdx = itemBtnIndex;
                         ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
                         return;
                     } else {
                         log.info("[STRICT VALIDATION] Wanted item '{}' not in subcategory '{}'. Found 'Go back' at index {}. Returning to search next subcategory...", targetItem, activeSubcategory, backBtnIndex);
+                        updateState(GiftStep.SEARCHING_SUBMENUS, "Item '" + targetItem + "' not in subcategory '" + activeSubcategory + "', clicking 'Go back'");
                         final int bIdx = backBtnIndex;
                         ticker.schedule(() -> clickFormButton(packet.getFormId(), bIdx), 150, TimeUnit.MILLISECONDS);
                         return;
@@ -757,6 +907,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 if (targetBtnIndex == -1) targetBtnIndex = nextSub.getButtonIndex();
 
                 log.info("[STRICT VALIDATION] Next subcategory in search queue: '{}'. Found button index {}. Clicking...", nextSub.getName(), targetBtnIndex);
+                updateState(GiftStep.SEARCHING_SUBMENUS, "Opening subcategory '" + nextSub.getName() + "' (button " + targetBtnIndex + ") from Main Store");
                 final int btnIdx = targetBtnIndex;
                 ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
                 return;
@@ -794,6 +945,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
             log.info("[STRICT VALIDATION] SUCCESS: Found wanted item '{}' directly in Main Store at index {}. Clicking to select...", this.targetItem, directBtnIndex);
             this.giftStep = GiftStep.SELECTING_ITEM;
+            updateState(GiftStep.SELECTING_ITEM, "Found item '" + this.targetItem + "' directly in Main Store (button " + directBtnIndex + "), clicking to select");
             final int btnIdx = directBtnIndex;
             ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
             return;
@@ -827,6 +979,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
         log.info("[STRICT VALIDATION] Item '{}' not directly in Main Store. Queued {} subcategories. Opening first subcategory '{}' at button index {}...",
                 targetItem, info.getSubcategories().size(), firstSub.getName(), firstIdx);
+        updateState(GiftStep.SEARCHING_SUBMENUS, "Item '" + targetItem + "' not directly in Main Store, opening subcategory '" + firstSub.getName() + "' (button " + firstIdx + ")");
         final int btnIdx = firstIdx;
         ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
     }
@@ -918,12 +1071,15 @@ public class BotPacketHandler implements BedrockPacketHandler {
             return PacketSignal.HANDLED;
         }
 
+        this.lastServerMessage = combined;
+        updateState("Received server text message: '" + combined + "'");
+
         if (usernameTimeoutTask != null) {
             usernameTimeoutTask.cancel(false);
             usernameTimeoutTask = null;
         }
 
-        if (mode == GiBot.BotMode.GIFT && giftStep != GiftStep.IDLE && giftStep != GiftStep.FINISHED) {
+        if (mode == GiBot.BotMode.GIFT && giftStep != GiftStep.FINISHED) {
             String recLower = recipient != null ? recipient.toLowerCase().trim() : "";
             String itemLower = targetItem != null ? targetItem.toLowerCase().trim() : "";
 
@@ -931,6 +1087,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if (lower.contains("sorry, we can't find a player named " + recLower)
                     || (lower.contains("sorry, we can't find a player named") && lower.contains(recLower))
                     || lower.contains("can't find a player")) {
+                if (giftRetryTask != null) {
+                    giftRetryTask.cancel(false);
+                    giftRetryTask = null;
+                }
                 log.warn("[STRICT TEXT VALIDATION] Hive chat error: Player '{}' not found: '{}'", recipient, combined);
                 outputFailure(combined);
                 disconnectAndExit(1);
@@ -945,6 +1105,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
                     || lower.contains("already has the")
                     || lower.contains("already has")
                     || lower.contains("already owns")) {
+                if (giftRetryTask != null) {
+                    giftRetryTask.cancel(false);
+                    giftRetryTask = null;
+                }
                 log.warn("[STRICT TEXT VALIDATION] Hive chat error: Recipient '{}' already has item '{}': '{}'", recipient, targetItem, combined);
                 outputFailure(combined);
                 disconnectAndExit(1);
@@ -955,6 +1119,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if ((lower.contains("you've gifted") && lower.contains("we're sure they will love it!"))
                     || (lower.contains("you've gifted " + itemLower + " to " + recLower))
                     || (lower.contains("you've gifted") && lower.contains("to " + recLower))) {
+                if (giftRetryTask != null) {
+                    giftRetryTask.cancel(false);
+                    giftRetryTask = null;
+                }
                 log.info("[STRICT TEXT VALIDATION] Hive chat SUCCESS: '{}'", combined);
                 outputSuccess(combined);
                 this.giftStep = GiftStep.FINISHED;
@@ -966,7 +1134,14 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if (lower.contains("cannot receive")
                     || lower.contains("not eligible")
                     || lower.contains("cannot be gifted")
-                    || lower.contains("failed to gift")) {
+                    || lower.contains("failed to gift")
+                    || lower.contains("you cannot use")
+                    || lower.contains("gifting is currently disabled")
+                    || lower.contains("please wait before")) {
+                if (giftRetryTask != null) {
+                    giftRetryTask.cancel(false);
+                    giftRetryTask = null;
+                }
                 log.warn("[STRICT TEXT VALIDATION] Hive chat rejection: '{}'", combined);
                 outputFailure(combined);
                 disconnectAndExit(1);
@@ -1002,7 +1177,12 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     @Override
     public PacketSignal handle(DisconnectPacket packet) {
-        log.info("Disconnected by server: {}", packet.getKickMessage());
+        String kickMsg = packet.getKickMessage() != null ? CatalogManager.cleanFormatting(packet.getKickMessage()) : "Disconnected by server";
+        log.warn("Disconnected by server: {}", kickMsg);
+        this.lastServerMessage = kickMsg;
+        updateState("Server sent disconnect packet: '" + kickMsg + "'");
+        outputFailure("Disconnected by server: " + kickMsg);
+        disconnectAndExit(1);
         return PacketSignal.HANDLED;
     }
 
@@ -1015,13 +1195,28 @@ public class BotPacketHandler implements BedrockPacketHandler {
     @Override
     public PacketSignal handle(ToastRequestPacket packet) {
         log.info("Server ToastRequestPacket: title='{}', content='{}'", packet.getTitle(), packet.getContent());
+        this.lastServerMessage = packet.getTitle() + " - " + packet.getContent();
+        updateState("Received toast notification: '" + this.lastServerMessage + "'");
         return PacketSignal.HANDLED;
     }
 
     @Override
     public void onDisconnect(CharSequence reason) {
-        log.info("Session disconnected: {}", reason);
+        log.warn("Session disconnected: {}", reason);
+        updateState("Session disconnected: " + reason);
+        if (!exiting.get()) {
+            outputFailure("Network session disconnected: " + reason);
+            disconnectAndExit(1);
+        }
         ticker.shutdown();
+    }
+
+    private void attemptGiftCommand() {
+        if (!session.isConnected() || exiting.get()) return;
+        giftCommandAttempts++;
+        log.info("Executing /gift command (attempt {})...", giftCommandAttempts);
+        updateState("Executed /gift command (attempt " + giftCommandAttempts + ")");
+        sendCommand("/gift");
     }
 
     /**
@@ -1070,19 +1265,27 @@ public class BotPacketHandler implements BedrockPacketHandler {
             }
         }, 500, 50, TimeUnit.MILLISECONDS);
 
-        // Schedule /gift command 1.5 seconds after spawning into the world
-        ticker.schedule(() -> {
-            log.info("Executing /gift command...");
-            sendCommand("/gift");
-        }, 1500, TimeUnit.MILLISECONDS);
+        // Schedule initial /gift command 1.5 seconds after spawning into the world
+        ticker.schedule(this::attemptGiftCommand, 1500, TimeUnit.MILLISECONDS);
 
-        // Safety watchdog: auto-terminate after 45s if not already finished
-        ticker.schedule(() -> {
-            if (session.isConnected() && !exiting.get()) {
-                log.warn("Bot execution watchdog reached (45s limit). Disconnecting...");
-                disconnectAndExit(1);
+        // Retry sending /gift up to 5 times (every 8s) if still in IDLE step
+        giftRetryTask = ticker.scheduleAtFixedRate(() -> {
+            if (giftStep == GiftStep.IDLE && !exiting.get()) {
+                if (giftCommandAttempts < 5) {
+                    log.info("No response to /gift yet. Retrying /gift command (attempt {}/5)...", giftCommandAttempts + 1);
+                    attemptGiftCommand();
+                } else {
+                    log.warn("Sent /gift 5 times without form response. Waiting for server response or watchdog...");
+                    if (giftRetryTask != null) {
+                        giftRetryTask.cancel(false);
+                    }
+                }
+            } else {
+                if (giftRetryTask != null) {
+                    giftRetryTask.cancel(false);
+                }
             }
-        }, 45, TimeUnit.SECONDS);
+        }, 8000, 8000, TimeUnit.MILLISECONDS);
     }
 
     public void sendCommand(String commandLine) {

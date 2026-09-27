@@ -6,6 +6,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import lombok.extern.log4j.Log4j2;
@@ -34,7 +35,10 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 @Log4j2
 public class GiBot {
@@ -148,10 +152,10 @@ public class GiBot {
         String[] cleanArgs = cleanArgsList.toArray(new String[0]);
 
         if (!verbose) {
-            org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.OFF);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("com.ihsanharh.gibot", org.apache.logging.log4j.Level.OFF);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.OFF);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("io.netty", org.apache.logging.log4j.Level.OFF);
+            org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.WARN);
+            org.apache.logging.log4j.core.config.Configurator.setAllLevels("com.ihsanharh.gibot", org.apache.logging.log4j.Level.INFO);
+            org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.ERROR);
+            org.apache.logging.log4j.core.config.Configurator.setAllLevels("io.netty", org.apache.logging.log4j.Level.ERROR);
         }
 
         if (cleanArgs.length == 0 || cleanArgs[0].equals("--help") || cleanArgs[0].equals("-h")) {
@@ -259,6 +263,7 @@ public class GiBot {
                     .option(RakChannelOption.RAK_CLIENT_INTERNAL_ADDRESSES, 20)
                     .option(RakChannelOption.RAK_TIME_BETWEEN_SEND_CONNECTION_ATTEMPTS_MS, 500)
                     .option(RakChannelOption.RAK_GUID, ThreadLocalRandom.current().nextLong())
+                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
                     .handler(new BedrockChannelInitializer<BedrockClientSession>() {
                         @Override
                         protected BedrockClientSession createSession0(BedrockPeer peer, int subClientId) {
@@ -292,9 +297,25 @@ public class GiBot {
             ChannelFuture future = bootstrap.connect(targetAddress).sync();
             Channel channel = future.channel();
 
+            ScheduledExecutorService processWatchdog = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "GiBot-ProcessWatchdog");
+                t.setDaemon(true);
+                return t;
+            });
+            processWatchdog.schedule(() -> {
+                log.error("Process execution deadline reached (185s limit). Forcing shutdown.");
+                if (finalJsonOutput) {
+                    System.out.println("{\"status\":\"error\",\"message\":\"GiBot process reached maximum 3 minute execution limit\"}");
+                } else {
+                    System.out.println("Failed: GiBot process reached maximum 3 minute execution limit");
+                }
+                System.exit(1);
+            }, 185, TimeUnit.SECONDS);
+
             final Socks5UdpRelay relayToClose = socks5Relay;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
+                    processWatchdog.shutdownNow();
                     if (relayToClose != null) {
                         relayToClose.close();
                     }
@@ -306,6 +327,7 @@ public class GiBot {
 
             // Block and wait until the task is complete and session disconnects
             channel.closeFuture().sync();
+            processWatchdog.shutdownNow();
             log.info("Session closed. GiBot job complete.");
             eventLoopGroup.shutdownGracefully().sync();
         } catch (Exception e) {

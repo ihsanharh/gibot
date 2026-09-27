@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Configuration status="ERROR">
     <Appenders>
-        <Console name="Console" target="SYSTEM_OUT">
+        <Console name="Console" target="SYSTEM_ERR">
             <PatternLayout pattern="[%d{HH:mm:ss.SSS}] [%highlight{%level}{FATAL=red, ERROR=red, WARN=yellow, INFO=green, DEBUG=cyan}] [%t] %c{1}: %msg%n" />
-            <!-- Denies any log event at WARN level -->
-            <LevelRangeFilter minLevel="WARN" maxLevel="WARN" onMatch="DENY" onMismatch="NEUTRAL" />
         </Console>
     </Appenders>
     <Loggers>

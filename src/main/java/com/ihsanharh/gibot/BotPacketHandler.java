@@ -83,6 +83,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private final GiBot.BotMode mode;
     private final String recipient;
     private String targetItem;
+    private final String targetCategory;
 
     private long runtimeEntityId;
     private Vector3f currentPosition = Vector3f.ZERO;
@@ -138,6 +139,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private final AtomicBoolean exiting = new AtomicBoolean(false);
 
     public BotPacketHandler(BedrockClientSession session, Account account, SocketAddress serverAddress, CatalogManager catalogManager, GiBot.BotMode mode, String recipient, String targetItem, boolean jsonOutput) {
+        this(session, account, serverAddress, catalogManager, mode, recipient, targetItem, null, jsonOutput);
+    }
+
+    public BotPacketHandler(BedrockClientSession session, Account account, SocketAddress serverAddress, CatalogManager catalogManager, GiBot.BotMode mode, String recipient, String targetItem, String targetCategory, boolean jsonOutput) {
         this.session = session;
         this.account = account;
         this.serverAddress = serverAddress;
@@ -145,6 +150,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         this.mode = mode;
         this.recipient = recipient;
         this.targetItem = targetItem;
+        this.targetCategory = targetCategory != null && !targetCategory.isBlank() ? targetCategory.trim() : null;
         this.jsonOutput = jsonOutput;
         this.startTimeMs = System.currentTimeMillis();
         this.lastActionTimeMs = this.startTimeMs;
@@ -918,6 +924,14 @@ public class BotPacketHandler implements BedrockPacketHandler {
                         return;
                     }
 
+                    if (targetCategory != null && !targetCategory.isBlank()) {
+                        log.warn("[STRICT VALIDATION] Wanted item '{}' not in specified subcategory '{}'. Aborting.", targetItem, targetCategory);
+                        outputFailure("Item '" + targetItem + "' was not found in category '" + targetCategory + "'.");
+                        sendModalFormResponse(packet.getFormId(), "null");
+                        disconnectAndExit(1);
+                        return;
+                    }
+
                     log.info("[STRICT VALIDATION] Wanted item '{}' not in subcategory '{}'. Found 'Go back' at index {}. Returning to search next subcategory...", targetItem, activeSubcategory, backBtnIndex);
                     updateState(GiftStep.SEARCHING_SUBMENUS, "Item '" + targetItem + "' not in subcategory '" + activeSubcategory + "', clicking 'Go back'");
                     final int bIdx = backBtnIndex;
@@ -988,7 +1002,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
             }
         }
 
-        // 2. First arrival at Main Store: check if item is directly in Main Store
+        // 2. Check if item is directly in Main Store
         JsonObject root = null;
         try {
             root = JsonParser.parseString(packet.getFormData()).getAsJsonObject();
@@ -1001,6 +1015,59 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 isSubcategory = true;
                 break;
             }
+        }
+
+        // Direct category specified:
+        if (targetCategory != null && !targetCategory.isBlank()) {
+            if (targetCategory.equalsIgnoreCase("Main Store")) {
+                if (directBtnIndex != -1 && !isSubcategory) {
+                    String resolvedName = getButtonNameInForm(packet.getFormData(), directBtnIndex);
+                    if (resolvedName != null) this.targetItem = resolvedName;
+
+                    if (checkItemBalance(info, this.targetItem)) {
+                        return;
+                    }
+
+                    log.info("[STRICT VALIDATION] SUCCESS: Found wanted item '{}' directly in Main Store at index {}. Clicking to select...", this.targetItem, directBtnIndex);
+                    this.giftStep = GiftStep.SELECTING_ITEM;
+                    updateState(GiftStep.SELECTING_ITEM, "Found item '" + this.targetItem + "' directly in Main Store (button " + directBtnIndex + "), clicking to select");
+                    final int btnIdx = directBtnIndex;
+                    ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
+                    return;
+                } else {
+                    log.warn("[STRICT VALIDATION] Item '{}' was not found directly in Main Store as requested by category.", targetItem);
+                    outputFailure("Item '" + targetItem + "' was not found in Main Store.");
+                    disconnectAndExit(1);
+                    return;
+                }
+            }
+
+            CatalogManager.SubcategoryButton matchedSub = null;
+            for (CatalogManager.SubcategoryButton sub : info.getSubcategories()) {
+                if (sub.getName().equalsIgnoreCase(targetCategory)
+                        || sub.getName().toLowerCase().contains(targetCategory.toLowerCase())) {
+                    matchedSub = sub;
+                    break;
+                }
+            }
+
+            if (matchedSub == null) {
+                log.warn("[STRICT VALIDATION] Target category '{}' was not found on server.", targetCategory);
+                outputFailure("Category '" + targetCategory + "' was not found on server.");
+                disconnectAndExit(1);
+                return;
+            }
+
+            log.info("[STRICT VALIDATION] Target category specified: '{}'. Opening subcategory button index {} directly...",
+                    matchedSub.getName(), matchedSub.getButtonIndex());
+            this.giftStep = GiftStep.SEARCHING_SUBMENUS;
+            this.activeSubcategory = matchedSub.getName();
+            this.searchedInCurrentSubcategory = false;
+            this.giftSearchQueue.clear();
+            final int btnIdx = matchedSub.getButtonIndex();
+            updateState(GiftStep.SEARCHING_SUBMENUS, "Opening specified subcategory '" + matchedSub.getName() + "' (button " + btnIdx + ")");
+            ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
+            return;
         }
 
         if (directBtnIndex != -1 && !isSubcategory) {

@@ -134,6 +134,7 @@ public class GiBot {
         boolean verbose = false;
         boolean jsonOutput = false;
         String proxyArg = null;
+        String categoryArg = null;
         java.util.List<String> cleanArgsList = new java.util.ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
@@ -145,6 +146,12 @@ public class GiBot {
                 proxyArg = args[++i];
             } else if (arg.toLowerCase().startsWith("--proxy=")) {
                 proxyArg = arg.substring("--proxy=".length());
+            } else if ((arg.equalsIgnoreCase("-c") || arg.equalsIgnoreCase("--category")) && i + 1 < args.length) {
+                categoryArg = args[++i];
+            } else if (arg.toLowerCase().startsWith("--category=")) {
+                categoryArg = arg.substring("--category=".length());
+            } else if (arg.toLowerCase().startsWith("-c=")) {
+                categoryArg = arg.substring("-c=".length());
             } else {
                 cleanArgsList.add(arg);
             }
@@ -160,10 +167,12 @@ public class GiBot {
 
         if (cleanArgs.length == 0 || cleanArgs[0].equals("--help") || cleanArgs[0].equals("-h")) {
             System.out.println("Usage:");
-            System.out.println("  ./gibot fetch                  -> Fetch store items & token balance");
-            System.out.println("  ./gibot fetch [item]           -> Fetch specific item token cost & image");
-            System.out.println("  ./gibot gift [username] [item] -> Gift an item to a player");
+            System.out.println("  ./gibot fetch                                  -> Fetch store items & token balance");
+            System.out.println("  ./gibot fetch [item]                           -> Fetch specific item token cost & image");
+            System.out.println("  ./gibot gift [username] [item]                 -> Gift an item to a player");
+            System.out.println("  ./gibot gift [username] [item] -c [category]   -> Gift an item directly inside a category");
             System.out.println("Options:");
+            System.out.println("  -c, --category <name>          -> Target subcategory (e.g. 'Regular Costume', 'Hats')");
             System.out.println("  -p, --proxy <url>              -> HTTP or SOCKS5 proxy URL");
             System.out.println("  -j, --json                     -> Output in machine-readable JSON format");
             System.out.println("  -v, --verbose                  -> Show full connection & debug logs");
@@ -178,9 +187,9 @@ public class GiBot {
             mode = BotMode.GIFT;
             if (cleanArgs.length < 3) {
                 if (jsonOutput) {
-                    System.out.println("{\"status\":\"error\",\"message\":\"Missing arguments for gift! Usage: gift [username] [item]\"}");
+                    System.out.println("{\"status\":\"error\",\"message\":\"Missing arguments for gift! Usage: gift [username] [item] [-c category]\"}");
                 } else {
-                    System.out.println("Failed: Missing arguments for gift! Usage: ./gibot gift [username] [item]");
+                    System.out.println("Failed: Missing arguments for gift! Usage: ./gibot gift [username] [item] [-c category]");
                 }
                 System.exit(1);
                 return;
@@ -204,9 +213,9 @@ public class GiBot {
             }
         } else {
             if (jsonOutput) {
-                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item]\"}");
+                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item] [-c category]\"}");
             } else {
-                System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item]");
+                System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item] [-c category]");
             }
             System.exit(1);
             return;
@@ -221,7 +230,8 @@ public class GiBot {
         log.info("Connecting to {}:{} (Minecraft {})", host, port, CODEC.getMinecraftVersion());
         log.info("Mode: {}", mode);
         if (mode == BotMode.GIFT) {
-            log.info("Action: Gift \"{}\" -> Player \"{}\"", targetItem, recipient);
+            String catInfo = categoryArg != null && !categoryArg.isBlank() ? " (Category: \"" + categoryArg + "\")" : "";
+            log.info("Action: Gift \"{}\"{} -> Player \"{}\"", targetItem, catInfo, recipient);
         } else if (targetItem != null && !targetItem.isBlank()) {
             log.info("Target Item: \"{}\"", targetItem);
         }
@@ -229,6 +239,7 @@ public class GiBot {
         final BotMode finalMode = mode;
         final String finalRecipient = recipient;
         final String finalTargetItem = targetItem;
+        final String finalTargetCategory = categoryArg != null && !categoryArg.isBlank() ? categoryArg.trim() : null;
         final boolean finalJsonOutput = jsonOutput;
 
         Socks5UdpRelay socks5Relay = null;
@@ -275,7 +286,7 @@ public class GiBot {
                             session.setCodec(CODEC);
                             BotPacketHandler handler = new BotPacketHandler(
                                     session, account, targetAddress, catalogManager,
-                                    finalMode, finalRecipient, finalTargetItem, finalJsonOutput
+                                    finalMode, finalRecipient, finalTargetItem, finalTargetCategory, finalJsonOutput
                             );
                             session.setPacketHandler(handler);
 

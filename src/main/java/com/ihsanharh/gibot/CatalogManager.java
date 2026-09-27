@@ -308,6 +308,14 @@ public class CatalogManager {
         if (jsonOutput) {
             JsonObject root = new JsonObject();
             root.addProperty("tokens", data.getAccountTokenBalance());
+            Integer costumeTokens = data.getCategoryTokens().get("Regular Costume");
+            root.addProperty("costumeTokens", costumeTokens != null ? costumeTokens : 0);
+            JsonObject catTokensObj = new JsonObject();
+            for (Map.Entry<String, Integer> entry : data.getCategoryTokens().entrySet()) {
+                catTokensObj.addProperty(entry.getKey(), entry.getValue());
+            }
+            root.add("categoryTokens", catTokensObj);
+
             JsonArray itemsArray = new JsonArray();
             for (ItemEntry item : data.getItems().values()) {
                 JsonObject io = new JsonObject();
@@ -329,6 +337,10 @@ public class CatalogManager {
         }
 
         System.out.printf("Available Tokens: %d\n", data.getAccountTokenBalance());
+        Integer plainCostumeTokens = data.getCategoryTokens().get("Regular Costume");
+        if (plainCostumeTokens != null) {
+            System.out.printf("Available Costume Tokens: %d\n", plainCostumeTokens);
+        }
 
         Map<String, List<ItemEntry>> grouped = new TreeMap<>();
         for (ItemEntry entry : data.getItems().values()) {

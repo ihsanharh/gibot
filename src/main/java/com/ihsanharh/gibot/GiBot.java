@@ -77,6 +77,7 @@ public class GiBot {
 
     public enum BotMode {
         FETCH,
+        TOKENS,
         GIFT
     }
 
@@ -167,6 +168,7 @@ public class GiBot {
 
         if (cleanArgs.length == 0 || cleanArgs[0].equals("--help") || cleanArgs[0].equals("-h")) {
             System.out.println("Usage:");
+            System.out.println("  ./gibot tokens                                 -> Quick fetch token balances (general & costume)");
             System.out.println("  ./gibot fetch                                  -> Fetch store items & token balance");
             System.out.println("  ./gibot fetch [item]                           -> Fetch specific item token cost & image");
             System.out.println("  ./gibot gift [username] [item]                 -> Gift an item to a player");
@@ -201,21 +203,27 @@ public class GiBot {
                 sb.append(cleanArgs[i]);
             }
             targetItem = sb.toString().trim();
+        } else if (cleanArgs[0].equalsIgnoreCase("tokens") || cleanArgs[0].equalsIgnoreCase("balance")) {
+            mode = BotMode.TOKENS;
         } else if (cleanArgs[0].equalsIgnoreCase("fetch")) {
-            mode = BotMode.FETCH;
-            if (cleanArgs.length > 1) {
-                StringBuilder sb = new StringBuilder();
-                for (int i = 1; i < cleanArgs.length; i++) {
-                    if (i > 1) sb.append(" ");
-                    sb.append(cleanArgs[i]);
+            if (cleanArgs.length > 1 && (cleanArgs[1].equalsIgnoreCase("--tokens-only") || cleanArgs[1].equalsIgnoreCase("-t"))) {
+                mode = BotMode.TOKENS;
+            } else {
+                mode = BotMode.FETCH;
+                if (cleanArgs.length > 1) {
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 1; i < cleanArgs.length; i++) {
+                        if (i > 1) sb.append(" ");
+                        sb.append(cleanArgs[i]);
+                    }
+                    targetItem = sb.toString().trim();
                 }
-                targetItem = sb.toString().trim();
             }
         } else {
             if (jsonOutput) {
-                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item] [-c category]\"}");
+                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: tokens, fetch, gift [username] [item] [-c category]\"}");
             } else {
-                System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: fetch, fetch [item], gift [username] [item] [-c category]");
+                System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: tokens, fetch, gift [username] [item] [-c category]");
             }
             System.exit(1);
             return;

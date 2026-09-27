@@ -247,8 +247,20 @@ public class BotPacketHandler implements BedrockPacketHandler {
         if (!outputPrinted.compareAndSet(false, true)) return;
         this.giftStep = GiftStep.FINISHED;
         updateState(GiftStep.FINISHED, "Gifting completed successfully: " + message);
+
+        boolean isCostume = (targetCategory != null && targetCategory.equalsIgnoreCase("Regular Costume"))
+                || (targetItem != null && catalogManager.getData().getItems().containsKey(targetItem)
+                && "Regular Costume".equalsIgnoreCase(catalogManager.getData().getItems().get(targetItem).getCategory()));
+
         int remainingTokens = -1;
-        if (cachedTokenBalance != -1) {
+        int remainingCostumeTokens = -1;
+
+        if (isCostume) {
+            Integer costumeAvail = cachedCategoryTokens.get("Regular Costume");
+            if (costumeAvail != null && costumeAvail > 0) {
+                remainingCostumeTokens = Math.max(0, costumeAvail - 1);
+            }
+        } else if (cachedTokenBalance != -1) {
             int cost = (targetItemCost > 0) ? targetItemCost : 1;
             remainingTokens = Math.max(0, cachedTokenBalance - cost);
         }
@@ -259,17 +271,29 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if (mode == GiBot.BotMode.GIFT) {
                 obj.addProperty("recipient", recipient);
                 obj.addProperty("item", targetItem);
+                if (targetCategory != null) {
+                    obj.addProperty("category", targetCategory);
+                }
                 if (remainingTokens != -1) {
                     obj.addProperty("remainingTokens", remainingTokens);
                     obj.addProperty("remainingBalance", remainingTokens);
+                }
+                if (remainingCostumeTokens != -1) {
+                    obj.addProperty("remainingCostumeTokens", remainingCostumeTokens);
                 }
             }
             obj.addProperty("message", message);
             obj.add("lastState", getLastKnownStateJson());
             System.out.println(obj.toString());
         } else {
-            if (mode == GiBot.BotMode.GIFT && remainingTokens != -1) {
-                System.out.println(String.format("Success: %s (Remaining Tokens: %d)", message, remainingTokens));
+            if (mode == GiBot.BotMode.GIFT) {
+                if (remainingCostumeTokens != -1) {
+                    System.out.println(String.format("Success: %s (Remaining Costume Tokens: %d)", message, remainingCostumeTokens));
+                } else if (remainingTokens != -1) {
+                    System.out.println(String.format("Success: %s (Remaining Tokens: %d)", message, remainingTokens));
+                } else {
+                    System.out.println("Success: " + message);
+                }
             } else {
                 System.out.println("Success: " + message);
             }
@@ -513,6 +537,39 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
         if (mode == GiBot.BotMode.GIFT) {
             handleGiftFlow(packet, info);
+            return PacketSignal.HANDLED;
+        }
+
+        // --- TOKENS MODE (Quick token check without crawling items) ---
+        if (mode == GiBot.BotMode.TOKENS && info.isMainForm()) {
+            int generalTokens = info.getTokenBalance() != -1 ? info.getTokenBalance() : catalogManager.getData().getAccountTokenBalance();
+            if (generalTokens == -1) {
+                generalTokens = 0;
+            }
+
+            Integer costumeTokens = info.getCategoryTokens().get("Regular Costume");
+            if (costumeTokens == null) {
+                costumeTokens = catalogManager.getData().getCategoryTokens().get("Regular Costume");
+            }
+            int costumeTokensVal = costumeTokens != null ? costumeTokens : 0;
+
+            if (jsonOutput) {
+                JsonObject root = new JsonObject();
+                root.addProperty("status", "success");
+                root.addProperty("tokens", generalTokens);
+                root.addProperty("costumeTokens", costumeTokensVal);
+                JsonObject catObj = new JsonObject();
+                for (java.util.Map.Entry<String, Integer> e : info.getCategoryTokens().entrySet()) {
+                    catObj.addProperty(e.getKey(), e.getValue());
+                }
+                root.add("categoryTokens", catObj);
+                System.out.println(root.toString());
+            } else {
+                System.out.printf("Available Gift Tokens: %d\n", generalTokens);
+                System.out.printf("Available Costume Tokens: %d\n", costumeTokensVal);
+            }
+
+            disconnectAndExit(0);
             return PacketSignal.HANDLED;
         }
 

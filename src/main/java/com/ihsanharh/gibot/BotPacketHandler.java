@@ -136,13 +136,18 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private final java.util.Map<String, Integer> cachedCategoryTokens = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     private boolean searchedInCurrentSubcategory = false;
     private int targetItemCost = 0;
+    private Integer maxTokens = null;
     private final AtomicBoolean exiting = new AtomicBoolean(false);
 
     public BotPacketHandler(BedrockClientSession session, Account account, SocketAddress serverAddress, CatalogManager catalogManager, GiBot.BotMode mode, String recipient, String targetItem, boolean jsonOutput) {
-        this(session, account, serverAddress, catalogManager, mode, recipient, targetItem, null, jsonOutput);
+        this(session, account, serverAddress, catalogManager, mode, recipient, targetItem, null, jsonOutput, null);
     }
 
     public BotPacketHandler(BedrockClientSession session, Account account, SocketAddress serverAddress, CatalogManager catalogManager, GiBot.BotMode mode, String recipient, String targetItem, String targetCategory, boolean jsonOutput) {
+        this(session, account, serverAddress, catalogManager, mode, recipient, targetItem, targetCategory, jsonOutput, null);
+    }
+
+    public BotPacketHandler(BedrockClientSession session, Account account, SocketAddress serverAddress, CatalogManager catalogManager, GiBot.BotMode mode, String recipient, String targetItem, String targetCategory, boolean jsonOutput, Integer maxTokens) {
         this.session = session;
         this.account = account;
         this.serverAddress = serverAddress;
@@ -152,6 +157,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         this.targetItem = targetItem;
         this.targetCategory = targetCategory != null && !targetCategory.isBlank() ? targetCategory.trim() : null;
         this.jsonOutput = jsonOutput;
+        this.maxTokens = maxTokens;
         this.startTimeMs = System.currentTimeMillis();
         this.lastActionTimeMs = this.startTimeMs;
         this.lastActionDescription = "Session initialized, awaiting network settings";
@@ -755,7 +761,8 @@ public class BotPacketHandler implements BedrockPacketHandler {
             // - Button 2: "Go back"
             // =========================================================================
             if (formTitle.equals("Gifting") && "modal".equalsIgnoreCase(formType)
-                    && contentText.contains("This amount will be taken from your gift wallet after selecting and confirming a gifting method. Do you wish to proceed?")) {
+                    && (contentText.contains("This amount will be taken from your gift wallet after selecting and confirming a gifting method. Do you wish to proceed?")
+                        || contentText.contains("The price of this gift is different based on the current rank of the receiver"))) {
                 String btn1 = root.has("button1") ? CatalogManager.cleanFormatting(root.get("button1").getAsString()) : "";
                 String btn2 = root.has("button2") ? CatalogManager.cleanFormatting(root.get("button2").getAsString()) : "";
 
@@ -875,6 +882,25 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 String btn2 = root.has("button2") ? CatalogManager.cleanFormatting(root.get("button2").getAsString()) : "";
 
                 if (btn1.equals("Send gift") && btn2.equals("Go back")) {
+                    if (this.maxTokens != null) {
+                        java.util.regex.Pattern p = java.util.regex.Pattern.compile("(\\d+)\\s+tokens?", java.util.regex.Pattern.CASE_INSENSITIVE);
+                        java.util.regex.Matcher m = p.matcher(contentText);
+                        if (m.find()) {
+                            try {
+                                int tokensInModal = Integer.parseInt(m.group(1));
+                                if (tokensInModal > this.maxTokens) {
+                                    log.warn("[STRICT VALIDATION] Aborting gift: Recipient '{}' requires {} tokens for '{}', exceeding allowed maxTokens of {}.",
+                                            recipient, tokensInModal, targetItem, maxTokens);
+                                    outputFailure(String.format("Gifting '%s' requires %d tokens, but maximum allowed is %d tokens. Recipient does not have Hive+ rank.",
+                                            targetItem, tokensInModal, maxTokens));
+                                    sendModalFormResponse(packet.getFormId(), "false\n");
+                                    disconnectAndExit(1);
+                                    return;
+                                }
+                            } catch (NumberFormatException ignored) {}
+                        }
+                    }
+
                     log.info("[STRICT VALIDATION] Matched Final Confirmation Modal: Title='{}', Content verified, Button 1='{}', Button 2='{}'. Submitting final confirmation...", formTitle, btn1, btn2);
                     this.giftStep = GiftStep.AWAITING_COMPLETION;
                     updateState(GiftStep.AWAITING_COMPLETION, "Confirmed final 'Send gift' modal");

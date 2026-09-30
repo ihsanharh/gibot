@@ -136,6 +136,7 @@ public class GiBot {
         boolean jsonOutput = false;
         String proxyArg = null;
         String categoryArg = null;
+        Integer maxTokensArg = null;
         java.util.List<String> cleanArgsList = new java.util.ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
@@ -153,6 +154,18 @@ public class GiBot {
                 categoryArg = arg.substring("--category=".length());
             } else if (arg.toLowerCase().startsWith("-c=")) {
                 categoryArg = arg.substring("-c=".length());
+            } else if ((arg.equalsIgnoreCase("-m") || arg.equalsIgnoreCase("--max-tokens")) && i + 1 < args.length) {
+                try {
+                    maxTokensArg = Integer.parseInt(args[++i]);
+                } catch (NumberFormatException ignored) {}
+            } else if (arg.toLowerCase().startsWith("--max-tokens=")) {
+                try {
+                    maxTokensArg = Integer.parseInt(arg.substring("--max-tokens=".length()));
+                } catch (NumberFormatException ignored) {}
+            } else if (arg.toLowerCase().startsWith("-m=")) {
+                try {
+                    maxTokensArg = Integer.parseInt(arg.substring("-m=".length()));
+                } catch (NumberFormatException ignored) {}
             } else {
                 cleanArgsList.add(arg);
             }
@@ -249,6 +262,7 @@ public class GiBot {
         final String finalTargetItem = targetItem;
         final String finalTargetCategory = categoryArg != null && !categoryArg.isBlank() ? categoryArg.trim() : null;
         final boolean finalJsonOutput = jsonOutput;
+        final Integer finalMaxTokens = maxTokensArg;
 
         Socks5UdpRelay socks5Relay = null;
         try {
@@ -294,7 +308,8 @@ public class GiBot {
                             session.setCodec(CODEC);
                             BotPacketHandler handler = new BotPacketHandler(
                                     session, account, targetAddress, catalogManager,
-                                    finalMode, finalRecipient, finalTargetItem, finalTargetCategory, finalJsonOutput
+                                    finalMode, finalRecipient, finalTargetItem, finalTargetCategory, finalJsonOutput,
+                                    finalMaxTokens
                             );
                             session.setPacketHandler(handler);
 

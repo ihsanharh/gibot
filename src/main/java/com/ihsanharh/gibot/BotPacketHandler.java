@@ -125,6 +125,9 @@ public class BotPacketHandler implements BedrockPacketHandler {
     private ScheduledFuture<?> usernameTimeoutTask = null;
     private ScheduledFuture<?> giftRetryTask = null;
     private int giftCommandAttempts = 0;
+    private volatile long lastGiftCommandTimeMs = 0;
+    private volatile boolean returningToMainStoreFromSubcategory = false;
+    private int mainStoreReopenCount = 0;
     private final Queue<CatalogManager.SubcategoryButton> giftSearchQueue = new LinkedList<>();
     private final Queue<CatalogManager.SubcategoryButton> crawlQueue = new LinkedList<>();
     private CatalogManager.SubcategoryButton currentCrawlingSubcategory = null;
@@ -976,6 +979,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if (formTitle.equals("Gifting") && "form".equalsIgnoreCase(formType) && contentText.isEmpty()) {
                 int backBtnIndex = findButtonByExactText(root, "Go back");
                 if (backBtnIndex != -1) {
+                    this.returningToMainStoreFromSubcategory = false;
                     log.info("[STRICT VALIDATION] Matched Subcategory Form: Title='{}', Content='{}'. Found 'Go back' button at index {}. Active Subcategory='{}'.", formTitle, contentText, backBtnIndex, activeSubcategory);
 
                     int itemBtnIndex = findButtonByExactText(root, targetItem);
@@ -1017,6 +1021,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
                     log.info("[STRICT VALIDATION] Wanted item '{}' not in subcategory '{}'. Found 'Go back' at index {}. Returning to search next subcategory...", targetItem, activeSubcategory, backBtnIndex);
                     updateState(GiftStep.SEARCHING_SUBMENUS, "Item '" + targetItem + "' not in subcategory '" + activeSubcategory + "', clicking 'Go back'");
+                    this.returningToMainStoreFromSubcategory = true;
                     final int bIdx = backBtnIndex;
                     ticker.schedule(() -> clickFormButton(packet.getFormId(), bIdx), 150, TimeUnit.MILLISECONDS);
                     return;
@@ -1056,29 +1061,66 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
         // 1. If currently searching sub-menus:
         if (giftStep == GiftStep.SEARCHING_SUBMENUS) {
-            if (!giftSearchQueue.isEmpty()) {
-                CatalogManager.SubcategoryButton nextSub = giftSearchQueue.poll();
-                this.activeSubcategory = nextSub.getName();
-                this.searchedInCurrentSubcategory = false;
+            if (returningToMainStoreFromSubcategory) {
+                returningToMainStoreFromSubcategory = false;
+                if (!giftSearchQueue.isEmpty()) {
+                    CatalogManager.SubcategoryButton nextSub = giftSearchQueue.poll();
+                    this.activeSubcategory = nextSub.getName();
+                    this.searchedInCurrentSubcategory = false;
 
-                // Lookup by name to avoid stale indices
-                int targetBtnIndex = -1;
-                for (CatalogManager.SubcategoryButton sub : info.getSubcategories()) {
-                    if (sub.getName().equalsIgnoreCase(nextSub.getName())) {
-                        targetBtnIndex = sub.getButtonIndex();
-                        break;
+                    // Lookup by name to avoid stale indices
+                    int targetBtnIndex = -1;
+                    for (CatalogManager.SubcategoryButton sub : info.getSubcategories()) {
+                        if (sub.getName().equalsIgnoreCase(nextSub.getName())) {
+                            targetBtnIndex = sub.getButtonIndex();
+                            break;
+                        }
+                    }
+                    if (targetBtnIndex == -1) targetBtnIndex = nextSub.getButtonIndex();
+
+                    log.info("[STRICT VALIDATION] Next subcategory in search queue: '{}'. Found button index {}. Clicking...", nextSub.getName(), targetBtnIndex);
+                    updateState(GiftStep.SEARCHING_SUBMENUS, "Opening subcategory '" + nextSub.getName() + "' (button " + targetBtnIndex + ") from Main Store");
+                    final int btnIdx = targetBtnIndex;
+                    ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
+                    return;
+                } else {
+                    // All sub-menus have been checked and target item was not found anywhere
+                    log.warn("[STRICT VALIDATION] All sub-menus searched. Item '{}' was not found anywhere.", targetItem);
+                    outputFailure("Item '" + targetItem + "' was not found in store or any sub-menu.");
+                    disconnectAndExit(1);
+                    return;
+                }
+            } else {
+                // We received the Main Store form again WITHOUT having returned from a subcategory!
+                // This happens when a duplicate /gift response is delivered by the server (e.g. from a retried /gift),
+                // or if the server reloaded the main menu before processing the subcategory click.
+                if (mainStoreReopenCount < 3) {
+                    mainStoreReopenCount++;
+                    String subToOpen = (targetCategory != null && !targetCategory.isBlank()) ? targetCategory : activeSubcategory;
+                    log.warn("[STRICT VALIDATION] Received Main Store Form again while expecting subcategory menu for '{}' (re-attempt {}/3, Form ID={}). Duplicate /gift response or server menu reset. Re-opening subcategory...",
+                            subToOpen, mainStoreReopenCount, packet.getFormId());
+
+                    int targetBtnIndex = -1;
+                    if (subToOpen != null) {
+                        for (CatalogManager.SubcategoryButton sub : info.getSubcategories()) {
+                            if (sub.getName().equalsIgnoreCase(subToOpen)
+                                    || sub.getName().toLowerCase().contains(subToOpen.toLowerCase())) {
+                                targetBtnIndex = sub.getButtonIndex();
+                                this.activeSubcategory = sub.getName();
+                                break;
+                            }
+                        }
+                    }
+
+                    if (targetBtnIndex != -1) {
+                        updateState(GiftStep.SEARCHING_SUBMENUS, "Re-opening subcategory '" + activeSubcategory + "' (button " + targetBtnIndex + ") from Main Store (Form ID " + packet.getFormId() + ")");
+                        final int btnIdx = targetBtnIndex;
+                        ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
+                        return;
                     }
                 }
-                if (targetBtnIndex == -1) targetBtnIndex = nextSub.getButtonIndex();
 
-                log.info("[STRICT VALIDATION] Next subcategory in search queue: '{}'. Found button index {}. Clicking...", nextSub.getName(), targetBtnIndex);
-                updateState(GiftStep.SEARCHING_SUBMENUS, "Opening subcategory '" + nextSub.getName() + "' (button " + targetBtnIndex + ") from Main Store");
-                final int btnIdx = targetBtnIndex;
-                ticker.schedule(() -> clickFormButton(packet.getFormId(), btnIdx), 150, TimeUnit.MILLISECONDS);
-                return;
-            } else {
-                // All sub-menus have been checked and target item was not found anywhere
-                log.warn("[STRICT VALIDATION] All sub-menus searched. Item '{}' was not found anywhere.", targetItem);
+                log.warn("[STRICT VALIDATION] Received Main Store form repeatedly without subcategory opening. Item '{}' was not found.", targetItem);
                 outputFailure("Item '" + targetItem + "' was not found in store or any sub-menu.");
                 disconnectAndExit(1);
                 return;
@@ -1146,6 +1188,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
             this.giftStep = GiftStep.SEARCHING_SUBMENUS;
             this.activeSubcategory = matchedSub.getName();
             this.searchedInCurrentSubcategory = false;
+            this.returningToMainStoreFromSubcategory = false;
             this.giftSearchQueue.clear();
             final int btnIdx = matchedSub.getButtonIndex();
             updateState(GiftStep.SEARCHING_SUBMENUS, "Opening specified subcategory '" + matchedSub.getName() + "' (button " + btnIdx + ")");
@@ -1186,6 +1229,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
         CatalogManager.SubcategoryButton firstSub = giftSearchQueue.poll();
         this.activeSubcategory = firstSub.getName();
         this.searchedInCurrentSubcategory = false;
+        this.returningToMainStoreFromSubcategory = false;
 
         int firstIdx = -1;
         for (CatalogManager.SubcategoryButton sub : info.getSubcategories()) {
@@ -1445,6 +1489,12 @@ public class BotPacketHandler implements BedrockPacketHandler {
 
     private void attemptGiftCommand() {
         if (!session.isConnected() || exiting.get()) return;
+        long now = System.currentTimeMillis();
+        if (lastGiftCommandTimeMs > 0 && (now - lastGiftCommandTimeMs) < 12000) {
+            log.debug("Skipping /gift command: only {}ms elapsed since last command.", now - lastGiftCommandTimeMs);
+            return;
+        }
+        lastGiftCommandTimeMs = now;
         giftCommandAttempts++;
         log.info("Executing /gift command (attempt {})...", giftCommandAttempts);
         updateState("Executed /gift command (attempt " + giftCommandAttempts + ")");
@@ -1500,24 +1550,26 @@ public class BotPacketHandler implements BedrockPacketHandler {
         // Schedule initial /gift command 1.5 seconds after spawning into the world
         ticker.schedule(this::attemptGiftCommand, 1500, TimeUnit.MILLISECONDS);
 
-        // Retry sending /gift up to 5 times (every 8s) if still in IDLE step
+        // Retry sending /gift up to 4 times (every 15s) if still in IDLE step (allows ample time for proxy/server lag)
         giftRetryTask = ticker.scheduleAtFixedRate(() -> {
             if (giftStep == GiftStep.IDLE && !exiting.get()) {
-                if (giftCommandAttempts < 5) {
-                    log.info("No response to /gift yet. Retrying /gift command (attempt {}/5)...", giftCommandAttempts + 1);
+                if (giftCommandAttempts < 4) {
+                    log.info("No response to /gift yet. Retrying /gift command (attempt {}/4)...", giftCommandAttempts + 1);
                     attemptGiftCommand();
                 } else {
-                    log.warn("Sent /gift 5 times without form response. Waiting for server response or watchdog...");
+                    log.warn("Sent /gift {} times without form response. Waiting for server response or watchdog...", giftCommandAttempts);
                     if (giftRetryTask != null) {
                         giftRetryTask.cancel(false);
+                        giftRetryTask = null;
                     }
                 }
             } else {
                 if (giftRetryTask != null) {
                     giftRetryTask.cancel(false);
+                    giftRetryTask = null;
                 }
             }
-        }, 8000, 8000, TimeUnit.MILLISECONDS);
+        }, 16500, 15000, TimeUnit.MILLISECONDS);
     }
 
     public void sendCommand(String commandLine) {

@@ -25,6 +25,8 @@ dependencies {
     implementation("org.cloudburstmc.protocol:bedrock-codec")
     implementation("org.cloudburstmc.protocol:common")
     implementation("org.cloudburstmc.protocol:bedrock-connection")
+    implementation("org.cloudburstmc.netty:netty-transport-nethernet:2.0.0.CR6-SNAPSHOT")
+    implementation("dev.opencollab:libdatachannel-java-arch-detect:0.24.6.0-20261029.091642-10")
 
     implementation("com.github.kas-tle:MinecraftAuth:f3d6e3fbc8")
     implementation("org.bitbucket.b_c:jose4j:0.9.6")

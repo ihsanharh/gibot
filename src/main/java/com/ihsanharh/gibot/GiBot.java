@@ -8,21 +8,22 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioDatagramChannel;
 import lombok.extern.log4j.Log4j2;
 import net.lenni0451.commons.httpclient.HttpClient;
 import net.lenni0451.commons.httpclient.proxy.ProxyHandler;
 import net.lenni0451.commons.httpclient.proxy.ProxyType;
 import net.raphimc.minecraftauth.MinecraftAuth;
 import org.cloudburstmc.nbt.NbtMap;
-import org.cloudburstmc.netty.channel.raknet.RakChannelFactory;
-import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
+import org.cloudburstmc.netty.channel.nethernet.NetherNetChannelFactory;
+import org.cloudburstmc.netty.channel.nethernet.config.NetherChannelOption;
+import org.cloudburstmc.netty.channel.nethernet.signaling.NetherNetDiscoverySignaling;
 import org.cloudburstmc.protocol.bedrock.BedrockClientSession;
 import org.cloudburstmc.protocol.bedrock.BedrockPeer;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockPacketSerializer;
-import org.cloudburstmc.protocol.bedrock.codec.v2193.Bedrock_v2193;
+import org.cloudburstmc.protocol.bedrock.codec.v2225.Bedrock_v2225;
+import org.cloudburstmc.protocol.bedrock.codec.v2225.BedrockCodecHelper_v2225;
 import org.cloudburstmc.protocol.bedrock.codec.v776.serializer.ItemComponentSerializer_v776;
 import org.cloudburstmc.protocol.bedrock.data.definitions.SimpleItemDefinition;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemVersion;
@@ -30,6 +31,7 @@ import org.cloudburstmc.protocol.bedrock.netty.initializer.BedrockChannelInitial
 import org.cloudburstmc.protocol.bedrock.packet.ItemComponentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.RequestNetworkSettingsPacket;
 import org.cloudburstmc.protocol.common.util.VarInts;
+import tel.schich.libdatachannel.PeerConnectionConfiguration;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -66,11 +68,11 @@ public class GiBot {
         }
     }
 
-    public static final BedrockCodecHelper HELPER = Bedrock_v2193.CODEC.createHelper();
-    public static final BedrockCodec CODEC = Bedrock_v2193.CODEC
+    public static final BedrockCodecHelper HELPER = Bedrock_v2225.CODEC.createHelper();
+    public static final BedrockCodec CODEC = Bedrock_v2225.CODEC
             .toBuilder()
-            .protocolVersion(2193)
-            .minecraftVersion("1.26.51")
+            .protocolVersion(2225)
+            .minecraftVersion("1.26.60")
             .updateSerializer(ItemComponentPacket.class, FixedItemComponentSerializer.INSTANCE)
             .helper(() -> HELPER)
             .build();
@@ -123,7 +125,7 @@ public class GiBot {
                 String maskedAuth = username != null ? (username + (password != null ? ":***@" : "@")) : "";
                 log.info("Configured HTTP proxy for Microsoft Auth: {}://{}{}:{}", scheme, maskedAuth, host, port);
             } else {
-                log.info("SOCKS proxy detected: SOCKS5 is used for Bedrock RakNet UDP session (Microsoft Auth connects direct via HTTPS)");
+                log.info("SOCKS proxy detected: SOCKS5 is used for NetherNet WebRTC session (Microsoft Auth connects direct via HTTPS)");
             }
         } catch (Exception e) {
             log.error("Failed to parse proxy URL '{}': {}", proxyUrl, e.getMessage());
@@ -264,14 +266,20 @@ public class GiBot {
         final boolean finalJsonOutput = jsonOutput;
         final Integer finalMaxTokens = maxTokensArg;
 
-        Socks5UdpRelay socks5Relay = null;
         try {
             HttpClient httpClient = MinecraftAuth.createHttpClient();
+            PeerConnectionConfiguration peerConfig = PeerConnectionConfiguration.DEFAULT;
             if (proxyArg != null && !proxyArg.isBlank()) {
                 configureHttpProxy(httpClient, proxyArg);
-                String normalized = proxyArg.trim().toLowerCase();
-                if (normalized.startsWith("socks5://") || normalized.startsWith("socks://") || (!normalized.contains("://") && !normalized.startsWith("http"))) {
-                    socks5Relay = Socks5UdpRelay.create(proxyArg);
+                String normalized = proxyArg.trim();
+                if (!normalized.contains("://")) {
+                    normalized = "socks5://" + normalized;
+                }
+                try {
+                    peerConfig = peerConfig.withProxyServer(URI.create(normalized));
+                    log.info("Configured NetherNet native WebRTC proxy: {}", normalized);
+                } catch (Exception e) {
+                    log.warn("Failed to set native proxy URI for NetherNet: {}", e.getMessage());
                 }
             }
             Account account = Account.getOrAuthenticate(httpClient, CODEC.getMinecraftVersion());
@@ -279,23 +287,13 @@ public class GiBot {
             InetSocketAddress targetAddress = new InetSocketAddress(host, port);
             NioEventLoopGroup eventLoopGroup = new NioEventLoopGroup();
 
-            final Socks5UdpRelay finalSocks5Relay = socks5Relay;
+            NetherNetDiscoverySignaling signaling = new NetherNetDiscoverySignaling();
             Bootstrap bootstrap = new Bootstrap()
                     .group(eventLoopGroup)
-                    .channelFactory(RakChannelFactory.client(NioDatagramChannel.class, datagramChannel -> {
-                        if (finalSocks5Relay != null) {
-                            datagramChannel.pipeline().addFirst("socks5-udp",
-                                    new Socks5UdpHandler(finalSocks5Relay.getRelayAddress(), targetAddress));
-                            log.info("Attached SOCKS5 UDP handler to datagram pipeline.");
-                        }
-                    }))
-                    .option(RakChannelOption.RAK_PROTOCOL_VERSION, CODEC.getRaknetProtocolVersion())
-                    .option(RakChannelOption.RAK_COMPATIBILITY_MODE, true)
-                    .option(RakChannelOption.RAK_IP_DONT_FRAGMENT, finalSocks5Relay == null)
-                    .option(RakChannelOption.RAK_MTU_SIZES, finalSocks5Relay != null ? new Integer[]{1400, 1200, 576} : new Integer[]{1492, 1200, 576})
-                    .option(RakChannelOption.RAK_CLIENT_INTERNAL_ADDRESSES, 20)
-                    .option(RakChannelOption.RAK_TIME_BETWEEN_SEND_CONNECTION_ATTEMPTS_MS, 500)
-                    .option(RakChannelOption.RAK_GUID, ThreadLocalRandom.current().nextLong())
+                    .channelFactory(NetherNetChannelFactory.client(signaling))
+                    .option(NetherChannelOption.NETHER_PEER_CONNECTION_CONFIG, peerConfig)
+                    .option(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 15000)
+                    .option(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 3)
                     .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
                     .handler(new BedrockChannelInitializer<BedrockClientSession>() {
                         @Override
@@ -323,11 +321,11 @@ public class GiBot {
                             RequestNetworkSettingsPacket packet = new RequestNetworkSettingsPacket();
                             packet.setProtocolVersion(CODEC.getProtocolVersion());
                             session.sendPacketImmediately(packet);
-                            log.info("Initiated session. Sent RequestNetworkSettingsPacket.");
+                            log.info("Initiated NetherNet session. Sent RequestNetworkSettingsPacket (Protocol: {}).", CODEC.getProtocolVersion());
                         }
                     });
 
-            log.info("Connecting via RakNet...");
+            log.info("Connecting via NetherNet (WebRTC)...");
             ChannelFuture future = bootstrap.connect(targetAddress).sync();
             Channel channel = future.channel();
 
@@ -346,13 +344,9 @@ public class GiBot {
                 System.exit(1);
             }, 185, TimeUnit.SECONDS);
 
-            final Socks5UdpRelay relayToClose = socks5Relay;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
                     processWatchdog.shutdownNow();
-                    if (relayToClose != null) {
-                        relayToClose.close();
-                    }
                     channel.close().sync();
                     eventLoopGroup.shutdownGracefully().sync();
                 } catch (Exception ignored) {
@@ -372,10 +366,6 @@ public class GiBot {
             }
             log.error("Fatal error in GiBot", e);
             System.exit(1);
-        } finally {
-            if (socks5Relay != null) {
-                socks5Relay.close();
-            }
         }
     }
 }

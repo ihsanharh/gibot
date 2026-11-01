@@ -1532,6 +1532,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 input.setInteractRotation(Vector2f.from(pitch, yaw));
                 input.setAnalogMoveVector(Vector2f.ZERO);
                 input.setRawMoveVector(Vector2f.ZERO);
+                input.setCameraOrientation(Vector3f.ZERO);
 
                 input.getInputData().add(PlayerAuthInputData.BLOCK_BREAKING_DELAY_ENABLED);
                 input.getInputData().add(PlayerAuthInputData.VERTICAL_COLLISION);

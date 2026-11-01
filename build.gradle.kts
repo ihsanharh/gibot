@@ -25,15 +25,16 @@ dependencies {
     implementation("org.cloudburstmc.protocol:bedrock-codec")
     implementation("org.cloudburstmc.protocol:common")
     implementation("org.cloudburstmc.protocol:bedrock-connection")
-    implementation("org.cloudburstmc.netty:netty-transport-nethernet:2.0.0.CR6-SNAPSHOT")
+    implementation("org.cloudburstmc.netty:transport-nethernet")
     implementation("dev.opencollab:libdatachannel-java-arch-detect:0.24.6.0-20261029.091642-10")
 
     implementation("com.github.kas-tle:MinecraftAuth:f3d6e3fbc8")
     implementation("org.bitbucket.b_c:jose4j:0.9.6")
     implementation("com.google.code.gson:gson:2.11.0")
-    implementation("org.apache.logging.log4j:log4j-core:2.12.2")
-    implementation("org.apache.logging.log4j:log4j-api:2.12.2")
-    implementation("org.apache.logging.log4j:log4j-slf4j-impl:2.12.2")
+    val log4jVersion = "2.24.3"
+    implementation("org.apache.logging.log4j:log4j-core:$log4jVersion")
+    implementation("org.apache.logging.log4j:log4j-api:$log4jVersion")
+    implementation("org.apache.logging.log4j:log4j-slf4j2-impl:$log4jVersion")
     implementation("org.checkerframework:checker-qual:3.37.0")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")

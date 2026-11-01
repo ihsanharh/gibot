@@ -5,9 +5,4 @@ plugins {
 }
 
 includeBuild("protocol")
-includeBuild("network") {
-    dependencySubstitution {
-        substitute(module("org.cloudburstmc.netty:netty-transport-nethernet")).using(project(":transport-nethernet"))
-        substitute(module("org.cloudburstmc.netty:netty-transport-raknet")).using(project(":transport-raknet"))
-    }
-}
+includeBuild("network")

@@ -16,30 +16,32 @@ import net.raphimc.minecraftauth.MinecraftAuth;
 import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.netty.channel.nethernet.NetherNetChannelFactory;
 import org.cloudburstmc.netty.channel.nethernet.config.NetherChannelOption;
-import org.cloudburstmc.netty.channel.nethernet.signaling.NetherNetDiscoverySignaling;
+import org.cloudburstmc.netty.channel.nethernet.signaling.ClientInfo;
+import org.cloudburstmc.netty.channel.nethernet.signaling.HttpSignalingSettings;
+import org.cloudburstmc.netty.channel.nethernet.signaling.NetherNetHTTPClientSignaling;
+import org.cloudburstmc.netty.util.nethernet.OperatorIdentity;
 import org.cloudburstmc.protocol.bedrock.BedrockClientSession;
 import org.cloudburstmc.protocol.bedrock.BedrockPeer;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockPacketSerializer;
 import org.cloudburstmc.protocol.bedrock.codec.v2225.Bedrock_v2225;
-import org.cloudburstmc.protocol.bedrock.codec.v2225.BedrockCodecHelper_v2225;
 import org.cloudburstmc.protocol.bedrock.codec.v776.serializer.ItemComponentSerializer_v776;
 import org.cloudburstmc.protocol.bedrock.data.definitions.SimpleItemDefinition;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemVersion;
-import org.cloudburstmc.protocol.bedrock.netty.initializer.BedrockChannelInitializer;
+import com.ihsanharh.gibot.nethernet.initializer.NetherNetBedrockChannelInitializer;
 import org.cloudburstmc.protocol.bedrock.packet.ItemComponentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.RequestNetworkSettingsPacket;
 import org.cloudburstmc.protocol.common.util.VarInts;
 import tel.schich.libdatachannel.PeerConnectionConfiguration;
 
 import java.net.InetSocketAddress;
+import java.security.KeyPair;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 @Log4j2
@@ -71,8 +73,6 @@ public class GiBot {
     public static final BedrockCodecHelper HELPER = Bedrock_v2225.CODEC.createHelper();
     public static final BedrockCodec CODEC = Bedrock_v2225.CODEC
             .toBuilder()
-            .protocolVersion(2225)
-            .minecraftVersion("1.26.60")
             .updateSerializer(ItemComponentPacket.class, FixedItemComponentSerializer.INSTANCE)
             .helper(() -> HELPER)
             .build();
@@ -174,7 +174,11 @@ public class GiBot {
         }
         String[] cleanArgs = cleanArgsList.toArray(new String[0]);
 
-        if (!verbose) {
+        if (verbose) {
+            org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.DEBUG);
+            org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.TRACE);
+            org.apache.logging.log4j.core.config.Configurator.setAllLevels("io.netty", org.apache.logging.log4j.Level.DEBUG);
+        } else {
             org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.WARN);
             org.apache.logging.log4j.core.config.Configurator.setAllLevels("com.ihsanharh.gibot", org.apache.logging.log4j.Level.INFO);
             org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.ERROR);
@@ -287,15 +291,26 @@ public class GiBot {
             InetSocketAddress targetAddress = new InetSocketAddress(host, port);
             NioEventLoopGroup eventLoopGroup = new NioEventLoopGroup();
 
-            NetherNetDiscoverySignaling signaling = new NetherNetDiscoverySignaling();
+            ClientInfo clientInfo = new ClientInfo(CODEC.getMinecraftVersion(), CODEC.getProtocolVersion(), 8);
+            HttpSignalingSettings signalingSettings = HttpSignalingSettings.DEFAULT.withClientInfo(clientInfo);
+
+            KeyPair sessionKeyPair = account.getAuthManager().getSessionKeyPair();
+            String multiplayerToken = account.getAuthManager().getMinecraftMultiplayerToken().getCached().getToken();
+            OperatorIdentity clientIdentity = OperatorIdentity.fromToken(
+                    sessionKeyPair,
+                    multiplayerToken,
+                    "https://authorization.franchise.minecraft-services.net/"
+            );
+
             Bootstrap bootstrap = new Bootstrap()
                     .group(eventLoopGroup)
-                    .channelFactory(NetherNetChannelFactory.client(signaling))
+                    .channelFactory(NetherNetChannelFactory.client(() -> new NetherNetHTTPClientSignaling(signalingSettings)))
                     .option(NetherChannelOption.NETHER_PEER_CONNECTION_CONFIG, peerConfig)
+                    .option(NetherChannelOption.NETHER_CLIENT_IDENTITY, clientIdentity)
                     .option(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 15000)
                     .option(NetherChannelOption.NETHER_CLIENT_MAX_HANDSHAKE_ATTEMPTS, 3)
                     .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 30000)
-                    .handler(new BedrockChannelInitializer<BedrockClientSession>() {
+                    .handler(new NetherNetBedrockChannelInitializer<BedrockClientSession>() {
                         @Override
                         protected BedrockClientSession createSession0(BedrockPeer peer, int subClientId) {
                             return new BedrockClientSession(peer, subClientId);
@@ -311,10 +326,11 @@ public class GiBot {
                             );
                             session.setPacketHandler(handler);
 
-                            // Silently catch and suppress non-fatal pipeline decoding exceptions (e.g. unmapped cosmetics)
+                            // Catch and log pipeline exceptions
                             session.getPeer().getChannel().pipeline().addLast(new ChannelInboundHandlerAdapter() {
                                 @Override
                                 public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                                    log.error("Pipeline exception caught in Netty channel: ", cause);
                                 }
                             });
 

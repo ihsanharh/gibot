@@ -20,6 +20,7 @@ import org.cloudburstmc.protocol.bedrock.data.command.CommandOriginType;
 import org.cloudburstmc.protocol.bedrock.data.definitions.ItemDefinition;
 import org.cloudburstmc.protocol.bedrock.data.definitions.SimpleItemDefinition;
 import org.cloudburstmc.protocol.bedrock.packet.BedrockPacketHandler;
+import org.cloudburstmc.protocol.bedrock.packet.ChunkRadiusUpdatedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ClientCacheStatusPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ClientToServerHandshakePacket;
 import org.cloudburstmc.protocol.bedrock.packet.CommandRequestPacket;
@@ -402,18 +403,10 @@ public class BotPacketHandler implements BedrockPacketHandler {
             cacheStatus.setSupported(false);
             session.sendPacketImmediately(cacheStatus);
         } else if (packet.getStatus() == PlayStatusPacket.Status.PLAYER_SPAWN) {
-            log.info("Bot spawned in world.");
-            updateState(GiftStep.IDLE, "Spawned in world, initialized player, starting keepalive ticker");
-
-            SetLocalPlayerAsInitializedPacket initializedPacket = new SetLocalPlayerAsInitializedPacket();
-            initializedPacket.setRuntimeEntityId(this.runtimeEntityId);
-            session.sendPacketImmediately(initializedPacket);
-
-            ServerboundLoadingScreenPacket endLoading = new ServerboundLoadingScreenPacket();
-            endLoading.setType(ServerboundLoadingScreenPacketType.END_LOADING_SCREEN);
-            session.sendPacketImmediately(endLoading);
-
-            startTicking();
+            log.info("Server PlayStatus: PLAYER_SPAWN received.");
+            if (this.runtimeEntityId != 0) {
+                completeSpawn();
+            }
         }
 
         return PacketSignal.HANDLED;
@@ -455,18 +448,40 @@ public class BotPacketHandler implements BedrockPacketHandler {
         }
 
         log.info("Received StartGamePacket: entityId={}", runtimeEntityId);
-        updateState(GiftStep.SPAWNING, "StartGame received (entityId=" + runtimeEntityId + "), loading chunks");
 
         RequestChunkRadiusPacket chunkRadius = new RequestChunkRadiusPacket();
         chunkRadius.setRadius(1);
         chunkRadius.setMaxRadius(1);
         session.sendPacketImmediately(chunkRadius);
 
-        ServerboundLoadingScreenPacket startLoading = new ServerboundLoadingScreenPacket();
-        startLoading.setType(ServerboundLoadingScreenPacketType.START_LOADING_SCREEN);
-        session.sendPacketImmediately(startLoading);
+        completeSpawn();
 
         return PacketSignal.HANDLED;
+    }
+
+    @Override
+    public PacketSignal handle(ChunkRadiusUpdatedPacket packet) {
+        log.debug("Server confirmed chunk radius: {}", packet.getRadius());
+        return PacketSignal.HANDLED;
+    }
+
+    private synchronized void completeSpawn() {
+        if (!spawned.compareAndSet(false, true)) {
+            return;
+        }
+
+        log.info("Bot spawned in world (entityId={}). Initializing player and starting keepalive ticker.", this.runtimeEntityId);
+        updateState(GiftStep.IDLE, "Spawned in world, initialized player, starting keepalive ticker");
+
+        SetLocalPlayerAsInitializedPacket initializedPacket = new SetLocalPlayerAsInitializedPacket();
+        initializedPacket.setRuntimeEntityId(this.runtimeEntityId);
+        session.sendPacketImmediately(initializedPacket);
+
+        ServerboundLoadingScreenPacket endLoading = new ServerboundLoadingScreenPacket();
+        endLoading.setType(ServerboundLoadingScreenPacketType.END_LOADING_SCREEN);
+        session.sendPacketImmediately(endLoading);
+
+        startTicking();
     }
 
     @Override
@@ -1505,10 +1520,6 @@ public class BotPacketHandler implements BedrockPacketHandler {
      * Minimal keepalive ticker (20 TPS) to prevent server timeout, and triggers /gift.
      */
     private void startTicking() {
-        if (!spawned.compareAndSet(false, true)) {
-            return;
-        }
-
         log.info("Bot initialized. Session keepalive started.");
 
         ticker.scheduleAtFixedRate(() -> {
@@ -1546,7 +1557,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
             } catch (Exception e) {
                 log.error("Error in keepalive ticker", e);
             }
-        }, 500, 50, TimeUnit.MILLISECONDS);
+        }, 200, 50, TimeUnit.MILLISECONDS);
 
         // Schedule initial /gift command 1.5 seconds after spawning into the world
         ticker.schedule(this::attemptGiftCommand, 1500, TimeUnit.MILLISECONDS);

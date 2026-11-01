@@ -27,8 +27,10 @@ import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockPacketSerializer;
 import org.cloudburstmc.protocol.bedrock.codec.v2225.Bedrock_v2225;
 import org.cloudburstmc.protocol.bedrock.codec.v776.serializer.ItemComponentSerializer_v776;
+import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition;
 import org.cloudburstmc.protocol.bedrock.data.definitions.SimpleItemDefinition;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemVersion;
+import org.cloudburstmc.protocol.common.SimpleDefinitionRegistry;
 import com.ihsanharh.gibot.nethernet.initializer.NetherNetBedrockChannelInitializer;
 import org.cloudburstmc.protocol.bedrock.packet.ItemComponentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.RequestNetworkSettingsPacket;
@@ -319,6 +321,7 @@ public class GiBot {
                         @Override
                         protected void initSession(BedrockClientSession session) {
                             session.setCodec(CODEC);
+                            session.getPeer().getCodecHelper().setBlockDefinitions(SimpleDefinitionRegistry.<BlockDefinition>builder().build());
                             BotPacketHandler handler = new BotPacketHandler(
                                     session, account, targetAddress, catalogManager,
                                     finalMode, finalRecipient, finalTargetItem, finalTargetCategory, finalJsonOutput,

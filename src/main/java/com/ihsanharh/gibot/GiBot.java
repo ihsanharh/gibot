@@ -37,6 +37,10 @@ import org.cloudburstmc.protocol.bedrock.packet.RequestNetworkSettingsPacket;
 import org.cloudburstmc.protocol.common.util.VarInts;
 import tel.schich.libdatachannel.PeerConnectionConfiguration;
 
+import com.ihsanharh.gibot.nethernet.proxy.NetherNetSocks5Relay;
+import com.ihsanharh.gibot.nethernet.proxy.ProxiedNetherNetClientSignaling;
+import org.cloudburstmc.netty.channel.nethernet.signaling.NetherNetClientSignaling;
+
 import java.net.InetSocketAddress;
 import java.security.KeyPair;
 import java.net.URI;
@@ -45,6 +49,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 @Log4j2
 public class GiBot {
@@ -271,6 +276,7 @@ public class GiBot {
         final String finalTargetCategory = categoryArg != null && !categoryArg.isBlank() ? categoryArg.trim() : null;
         final boolean finalJsonOutput = jsonOutput;
         final Integer finalMaxTokens = maxTokensArg;
+        NetherNetSocks5Relay socks5Relay = null;
 
         try {
             HttpClient httpClient = MinecraftAuth.createHttpClient();
@@ -281,11 +287,22 @@ public class GiBot {
                 if (!normalized.contains("://")) {
                     normalized = "socks5://" + normalized;
                 }
-                try {
-                    peerConfig = peerConfig.withProxyServer(URI.create(normalized));
-                    log.info("Configured NetherNet native WebRTC proxy: {}", normalized);
-                } catch (Exception e) {
-                    log.warn("Failed to set native proxy URI for NetherNet: {}", e.getMessage());
+                if (normalized.toLowerCase().startsWith("socks5://") || normalized.toLowerCase().startsWith("socks://")) {
+                    try {
+                        socks5Relay = NetherNetSocks5Relay.create(normalized);
+                        socks5Relay.setTargetServerAddress(new InetSocketAddress(host, port));
+                        log.info("Initialized NetherNet SOCKS5 UDP relay on 127.0.0.1:{}", socks5Relay.getLocalPort());
+                    } catch (Exception e) {
+                        log.error("Failed to initialize NetherNet SOCKS5 UDP relay for '{}': {}", proxyArg, e.getMessage());
+                        throw new RuntimeException("SOCKS5 proxy relay failed: " + e.getMessage(), e);
+                    }
+                } else {
+                    try {
+                        peerConfig = peerConfig.withProxyServer(URI.create(normalized));
+                        log.info("Configured NetherNet native WebRTC proxy: {}", normalized);
+                    } catch (Exception e) {
+                        log.warn("Failed to set native proxy URI for NetherNet: {}", e.getMessage());
+                    }
                 }
             }
             Account account = Account.getOrAuthenticate(httpClient, CODEC.getMinecraftVersion());
@@ -304,9 +321,18 @@ public class GiBot {
                     "https://authorization.franchise.minecraft-services.net/"
             );
 
+            final NetherNetSocks5Relay finalRelay = socks5Relay;
+            Supplier<NetherNetClientSignaling> signalingSupplier = () -> {
+                NetherNetHTTPClientSignaling base = new NetherNetHTTPClientSignaling(signalingSettings);
+                if (finalRelay != null) {
+                    return new ProxiedNetherNetClientSignaling(base, finalRelay);
+                }
+                return base;
+            };
+
             Bootstrap bootstrap = new Bootstrap()
                     .group(eventLoopGroup)
-                    .channelFactory(NetherNetChannelFactory.client(() -> new NetherNetHTTPClientSignaling(signalingSettings)))
+                    .channelFactory(NetherNetChannelFactory.client(signalingSupplier))
                     .option(NetherChannelOption.NETHER_PEER_CONNECTION_CONFIG, peerConfig)
                     .option(NetherChannelOption.NETHER_CLIENT_IDENTITY, clientIdentity)
                     .option(NetherChannelOption.NETHER_CLIENT_HANDSHAKE_TIMEOUT_MS, 15000)
@@ -366,6 +392,9 @@ public class GiBot {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
                     processWatchdog.shutdownNow();
+                    if (finalRelay != null) {
+                        finalRelay.close();
+                    }
                     channel.close().sync();
                     eventLoopGroup.shutdownGracefully().sync();
                 } catch (Exception ignored) {
@@ -375,6 +404,9 @@ public class GiBot {
             // Block and wait until the task is complete and session disconnects
             channel.closeFuture().sync();
             processWatchdog.shutdownNow();
+            if (socks5Relay != null) {
+                socks5Relay.close();
+            }
             log.info("Session closed. GiBot job complete.");
             eventLoopGroup.shutdownGracefully().sync();
         } catch (Exception e) {
@@ -385,6 +417,10 @@ public class GiBot {
             }
             log.error("Fatal error in GiBot", e);
             System.exit(1);
+        } finally {
+            if (socks5Relay != null) {
+                socks5Relay.close();
+            }
         }
     }
 }

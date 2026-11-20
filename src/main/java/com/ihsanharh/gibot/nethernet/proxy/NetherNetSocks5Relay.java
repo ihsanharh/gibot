@@ -201,7 +201,7 @@ public class NetherNetSocks5Relay implements Closeable {
 
                 InetSocketAddress target = targetServerAddress;
                 if (target == null) {
-                    log.debug("Dropping packet from client {} because targetServerAddress is not yet set", packet.getSocketAddress());
+                    log.trace("Dropping packet from client {} because targetServerAddress is not yet set", packet.getSocketAddress());
                     continue;
                 }
 
@@ -228,7 +228,7 @@ public class NetherNetSocks5Relay implements Closeable {
                 totalBytesSent.addAndGet(outBuf.length);
                 DatagramPacket proxyPacket = new DatagramPacket(outBuf, outBuf.length, proxyRelayAddress);
                 proxySocket.send(proxyPacket);
-                log.debug("Forwarded {}b UDP from client {} -> proxy {} (target: {})",
+                log.trace("Forwarded {}b UDP from client {} -> proxy {} (target: {})",
                         len, packet.getSocketAddress(), proxyRelayAddress, target);
             } catch (IOException e) {
                 if (closed.get()) break;
@@ -244,7 +244,7 @@ public class NetherNetSocks5Relay implements Closeable {
             try {
                 proxySocket.receive(packet);
                 int len = packet.getLength();
-                log.debug("Received {}b UDP from proxy relay {}", len, packet.getSocketAddress());
+                log.trace("Received {}b UDP from proxy relay {}", len, packet.getSocketAddress());
                 if (len < 10) continue;
 
                 byte[] data = packet.getData();
@@ -271,7 +271,7 @@ public class NetherNetSocks5Relay implements Closeable {
                     totalBytesReceived.addAndGet(payloadLen);
                     DatagramPacket localPacket = new DatagramPacket(data, offset + headerLen, payloadLen, client);
                     localSocket.send(localPacket);
-                    log.debug("Forwarded {}b UDP payload to local client {}", payloadLen, client);
+                    log.trace("Forwarded {}b UDP payload to local client {}", payloadLen, client);
                 }
             } catch (IOException e) {
                 if (closed.get()) break;

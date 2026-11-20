@@ -19,6 +19,7 @@ import org.cloudburstmc.netty.channel.nethernet.config.NetherChannelOption;
 import org.cloudburstmc.netty.channel.nethernet.signaling.ClientInfo;
 import org.cloudburstmc.netty.channel.nethernet.signaling.HttpSignalingSettings;
 import org.cloudburstmc.netty.channel.nethernet.signaling.NetherNetHTTPClientSignaling;
+import org.cloudburstmc.netty.util.nethernet.NetherNetLogging;
 import org.cloudburstmc.netty.util.nethernet.OperatorIdentity;
 import org.cloudburstmc.protocol.bedrock.BedrockClientSession;
 import org.cloudburstmc.protocol.bedrock.BedrockPeer;
@@ -182,15 +183,18 @@ public class GiBot {
         String[] cleanArgs = cleanArgsList.toArray(new String[0]);
 
         if (verbose) {
-            org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.DEBUG);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.TRACE);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("io.netty", org.apache.logging.log4j.Level.DEBUG);
+            org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.INFO);
+            org.apache.logging.log4j.core.config.Configurator.setAllLevels("com.ihsanharh.gibot", org.apache.logging.log4j.Level.DEBUG);
         } else {
             org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.WARN);
             org.apache.logging.log4j.core.config.Configurator.setAllLevels("com.ihsanharh.gibot", org.apache.logging.log4j.Level.INFO);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.ERROR);
-            org.apache.logging.log4j.core.config.Configurator.setAllLevels("io.netty", org.apache.logging.log4j.Level.ERROR);
         }
+        org.apache.logging.log4j.core.config.Configurator.setAllLevels("org.cloudburstmc", org.apache.logging.log4j.Level.ERROR);
+        org.apache.logging.log4j.core.config.Configurator.setAllLevels("io.netty", org.apache.logging.log4j.Level.ERROR);
+        org.apache.logging.log4j.core.config.Configurator.setAllLevels("tel.schich.libdatachannel", org.apache.logging.log4j.Level.ERROR);
+        try {
+            NetherNetLogging.setNativeLogLevel("ERROR");
+        } catch (Throwable ignored) {}
 
         if (cleanArgs.length == 0 || cleanArgs[0].equals("--help") || cleanArgs[0].equals("-h")) {
             System.out.println("Usage:");
@@ -355,11 +359,11 @@ public class GiBot {
                             );
                             session.setPacketHandler(handler);
 
-                            // Catch and log pipeline exceptions
+                            // Catch and suppress non-fatal pipeline exceptions
                             session.getPeer().getChannel().pipeline().addLast(new ChannelInboundHandlerAdapter() {
                                 @Override
                                 public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-                                    log.error("Pipeline exception caught in Netty channel: ", cause);
+                                    log.debug("Suppressed non-fatal pipeline exception: {}", cause.getMessage());
                                 }
                             });
 

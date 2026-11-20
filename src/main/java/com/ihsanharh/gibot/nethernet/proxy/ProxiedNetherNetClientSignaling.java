@@ -45,7 +45,7 @@ public class ProxiedNetherNetClientSignaling implements NetherNetClientSignaling
 
     @Override
     public void sendDescription(String targetNetworkId, String sdp) {
-        log.info("Sending SDP offer to {}:\n{}", targetNetworkId, sdp);
+        log.trace("Sending SDP offer to {}:\n{}", targetNetworkId, sdp);
         delegate.sendDescription(targetNetworkId, sdp);
     }
 
@@ -56,9 +56,9 @@ public class ProxiedNetherNetClientSignaling implements NetherNetClientSignaling
             if (parsed != null) {
                 if (NetherNetConstants.RTC_NEGOTIATION_CONNECT_RESPONSE.equals(parsed.type())) {
                     String originalSdp = parsed.payload();
-                    log.info("Received server SDP answer:\n{}", originalSdp);
+                    log.trace("Received server SDP answer:\n{}", originalSdp);
                     String rewrittenSdp = relay.rewriteSdpAnswer(originalSdp);
-                    log.info("Rewritten SDP answer:\n{}", rewrittenSdp);
+                    log.trace("Rewritten SDP answer:\n{}", rewrittenSdp);
                     String rewrittenSignal = NetherNetConstants.buildSignalConnectResponse(parsed.connectionId(), rewrittenSdp);
                     handler.onSignal(rewrittenSignal);
                     return;

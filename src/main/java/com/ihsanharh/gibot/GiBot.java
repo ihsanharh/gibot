@@ -42,11 +42,13 @@ import com.ihsanharh.gibot.nethernet.proxy.NetherNetSocks5Relay;
 import com.ihsanharh.gibot.nethernet.proxy.ProxiedNetherNetClientSignaling;
 import org.cloudburstmc.netty.channel.nethernet.signaling.NetherNetClientSignaling;
 
+import com.google.gson.JsonObject;
 import java.net.InetSocketAddress;
 import java.security.KeyPair;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -88,7 +90,63 @@ public class GiBot {
     public enum BotMode {
         FETCH,
         TOKENS,
-        GIFT
+        GIFT,
+        LOGIN
+    }
+
+    public static class CliOptions {
+        public boolean verbose = false;
+        public boolean jsonOutput = false;
+        public String proxyArg = null;
+        public String categoryArg = null;
+        public Integer maxTokensArg = null;
+        public String authPath = "auth.json";
+        public String[] cleanArgs = new String[0];
+    }
+
+    public static CliOptions parseCliArgs(String[] args) {
+        CliOptions opts = new CliOptions();
+        java.util.List<String> cleanArgsList = new java.util.ArrayList<>();
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
+            if (arg.equalsIgnoreCase("-v") || arg.equalsIgnoreCase("--verbose")) {
+                opts.verbose = true;
+            } else if (arg.equalsIgnoreCase("-j") || arg.equalsIgnoreCase("--json")) {
+                opts.jsonOutput = true;
+            } else if ((arg.equalsIgnoreCase("-p") || arg.equalsIgnoreCase("--proxy")) && i + 1 < args.length) {
+                opts.proxyArg = args[++i];
+            } else if (arg.toLowerCase().startsWith("--proxy=")) {
+                opts.proxyArg = arg.substring("--proxy=".length());
+            } else if ((arg.equalsIgnoreCase("-c") || arg.equalsIgnoreCase("--category")) && i + 1 < args.length) {
+                opts.categoryArg = args[++i];
+            } else if (arg.toLowerCase().startsWith("--category=")) {
+                opts.categoryArg = arg.substring("--category=".length());
+            } else if (arg.toLowerCase().startsWith("-c=")) {
+                opts.categoryArg = arg.substring("-c=".length());
+            } else if ((arg.equalsIgnoreCase("-m") || arg.equalsIgnoreCase("--max-tokens")) && i + 1 < args.length) {
+                try {
+                    opts.maxTokensArg = Integer.parseInt(args[++i]);
+                } catch (NumberFormatException ignored) {}
+            } else if (arg.toLowerCase().startsWith("--max-tokens=")) {
+                try {
+                    opts.maxTokensArg = Integer.parseInt(arg.substring("--max-tokens=".length()));
+                } catch (NumberFormatException ignored) {}
+            } else if (arg.toLowerCase().startsWith("-m=")) {
+                try {
+                    opts.maxTokensArg = Integer.parseInt(arg.substring("-m=".length()));
+                } catch (NumberFormatException ignored) {}
+            } else if ((arg.equalsIgnoreCase("-a") || arg.equalsIgnoreCase("--auth")) && i + 1 < args.length) {
+                opts.authPath = args[++i];
+            } else if (arg.toLowerCase().startsWith("--auth=")) {
+                opts.authPath = arg.substring("--auth=".length());
+            } else if (arg.toLowerCase().startsWith("-a=")) {
+                opts.authPath = arg.substring("-a=".length());
+            } else {
+                cleanArgsList.add(arg);
+            }
+        }
+        opts.cleanArgs = cleanArgsList.toArray(new String[0]);
+        return opts;
     }
 
     public static void configureHttpProxy(HttpClient httpClient, String proxyUrl) {
@@ -142,45 +200,14 @@ public class GiBot {
     }
 
     public static void main(String[] args) {
-        boolean verbose = false;
-        boolean jsonOutput = false;
-        String proxyArg = null;
-        String categoryArg = null;
-        Integer maxTokensArg = null;
-        java.util.List<String> cleanArgsList = new java.util.ArrayList<>();
-        for (int i = 0; i < args.length; i++) {
-            String arg = args[i];
-            if (arg.equalsIgnoreCase("-v") || arg.equalsIgnoreCase("--verbose")) {
-                verbose = true;
-            } else if (arg.equalsIgnoreCase("-j") || arg.equalsIgnoreCase("--json")) {
-                jsonOutput = true;
-            } else if ((arg.equalsIgnoreCase("-p") || arg.equalsIgnoreCase("--proxy")) && i + 1 < args.length) {
-                proxyArg = args[++i];
-            } else if (arg.toLowerCase().startsWith("--proxy=")) {
-                proxyArg = arg.substring("--proxy=".length());
-            } else if ((arg.equalsIgnoreCase("-c") || arg.equalsIgnoreCase("--category")) && i + 1 < args.length) {
-                categoryArg = args[++i];
-            } else if (arg.toLowerCase().startsWith("--category=")) {
-                categoryArg = arg.substring("--category=".length());
-            } else if (arg.toLowerCase().startsWith("-c=")) {
-                categoryArg = arg.substring("-c=".length());
-            } else if ((arg.equalsIgnoreCase("-m") || arg.equalsIgnoreCase("--max-tokens")) && i + 1 < args.length) {
-                try {
-                    maxTokensArg = Integer.parseInt(args[++i]);
-                } catch (NumberFormatException ignored) {}
-            } else if (arg.toLowerCase().startsWith("--max-tokens=")) {
-                try {
-                    maxTokensArg = Integer.parseInt(arg.substring("--max-tokens=".length()));
-                } catch (NumberFormatException ignored) {}
-            } else if (arg.toLowerCase().startsWith("-m=")) {
-                try {
-                    maxTokensArg = Integer.parseInt(arg.substring("-m=".length()));
-                } catch (NumberFormatException ignored) {}
-            } else {
-                cleanArgsList.add(arg);
-            }
-        }
-        String[] cleanArgs = cleanArgsList.toArray(new String[0]);
+        CliOptions opts = parseCliArgs(args);
+        boolean verbose = opts.verbose;
+        boolean jsonOutput = opts.jsonOutput;
+        String proxyArg = opts.proxyArg;
+        String categoryArg = opts.categoryArg;
+        Integer maxTokensArg = opts.maxTokensArg;
+        String authPathArg = opts.authPath != null && !opts.authPath.isBlank() ? opts.authPath.trim() : "auth.json";
+        String[] cleanArgs = opts.cleanArgs;
 
         if (verbose) {
             org.apache.logging.log4j.core.config.Configurator.setRootLevel(org.apache.logging.log4j.Level.INFO);
@@ -198,12 +225,14 @@ public class GiBot {
 
         if (cleanArgs.length == 0 || cleanArgs[0].equals("--help") || cleanArgs[0].equals("-h")) {
             System.out.println("Usage:");
+            System.out.println("  ./gibot login                                  -> Authenticate a Microsoft account via device code");
             System.out.println("  ./gibot tokens                                 -> Quick fetch token balances (general & costume)");
             System.out.println("  ./gibot fetch                                  -> Fetch store items & token balance");
             System.out.println("  ./gibot fetch [item]                           -> Fetch specific item token cost & image");
             System.out.println("  ./gibot gift [username] [item]                 -> Gift an item to a player");
             System.out.println("  ./gibot gift [username] [item] -c [category]   -> Gift an item directly inside a category");
             System.out.println("Options:");
+            System.out.println("  -a, --auth <path>              -> Auth cache JSON path (default: auth.json)");
             System.out.println("  -c, --category <name>          -> Target subcategory (e.g. 'Regular Costume', 'Hats')");
             System.out.println("  -p, --proxy <url>              -> HTTP or SOCKS5 proxy URL");
             System.out.println("  -j, --json                     -> Output in machine-readable JSON format");
@@ -215,7 +244,9 @@ public class GiBot {
         String recipient = null;
         String targetItem = null;
 
-        if (cleanArgs[0].equalsIgnoreCase("gift")) {
+        if (cleanArgs[0].equalsIgnoreCase("login")) {
+            mode = BotMode.LOGIN;
+        } else if (cleanArgs[0].equalsIgnoreCase("gift")) {
             mode = BotMode.GIFT;
             if (cleanArgs.length < 3) {
                 if (jsonOutput) {
@@ -251,12 +282,48 @@ public class GiBot {
             }
         } else {
             if (jsonOutput) {
-                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: tokens, fetch, gift [username] [item] [-c category]\"}");
+                System.out.println("{\"status\":\"error\",\"message\":\"Unknown command '" + cleanArgs[0] + "'. Usage: login, tokens, fetch, gift [username] [item] [-c category]\"}");
             } else {
-                System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: tokens, fetch, gift [username] [item] [-c category]");
+                System.out.println("Failed: Unknown command '" + cleanArgs[0] + "'. Usage: login, tokens, fetch, gift [username] [item] [-c category]");
             }
             System.exit(1);
             return;
+        }
+
+        if (mode == BotMode.LOGIN) {
+            try {
+                HttpClient httpClient = MinecraftAuth.createHttpClient();
+                if (proxyArg != null && !proxyArg.isBlank()) {
+                    configureHttpProxy(httpClient, proxyArg);
+                }
+                Account account = Account.getOrAuthenticate(httpClient, CODEC.getMinecraftVersion(), Paths.get(authPathArg), jsonOutput);
+                if (jsonOutput) {
+                    JsonObject doneObj = new JsonObject();
+                    doneObj.addProperty("status", "ok");
+                    doneObj.addProperty("event", "login_complete");
+                    doneObj.addProperty("gamertag", account.getDisplayName());
+                    doneObj.addProperty("authPath", authPathArg);
+                    System.out.println(doneObj.toString());
+                    System.out.flush();
+                } else {
+                    System.out.println("Login complete! Gamertag: " + account.getDisplayName() + " -> " + authPathArg);
+                }
+                return;
+            } catch (Exception e) {
+                String msg = e.getMessage() != null ? e.getMessage() : "Login error";
+                if (jsonOutput) {
+                    JsonObject errObj = new JsonObject();
+                    errObj.addProperty("status", "error");
+                    errObj.addProperty("message", msg);
+                    System.out.println(errObj.toString());
+                    System.out.flush();
+                } else {
+                    System.out.println("Failed: " + msg);
+                }
+                log.error("Fatal login error in GiBot", e);
+                System.exit(1);
+                return;
+            }
         }
 
         String host = "geo.hivebedrock.network";
@@ -309,7 +376,7 @@ public class GiBot {
                     }
                 }
             }
-            Account account = Account.getOrAuthenticate(httpClient, CODEC.getMinecraftVersion());
+            Account account = Account.getOrAuthenticate(httpClient, CODEC.getMinecraftVersion(), Paths.get(authPathArg), jsonOutput);
 
             InetSocketAddress targetAddress = new InetSocketAddress(host, port);
             NioEventLoopGroup eventLoopGroup = new NioEventLoopGroup();

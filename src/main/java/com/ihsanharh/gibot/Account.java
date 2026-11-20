@@ -32,7 +32,16 @@ public class Account {
      * Loads existing authenticated account from auth.json, or initiates Microsoft Device Code login.
      */
     public static Account getOrAuthenticate(HttpClient httpClient, String gameVersion) throws Exception {
-        Path authPath = Paths.get("auth.json");
+        return getOrAuthenticate(httpClient, gameVersion, Paths.get("auth.json"), false);
+    }
+
+    /**
+     * Loads existing authenticated account from the given authPath, or initiates Microsoft Device Code login.
+     */
+    public static Account getOrAuthenticate(HttpClient httpClient, String gameVersion, Path authPath, boolean jsonOutput) throws Exception {
+        if (authPath == null) {
+            authPath = Paths.get("auth.json");
+        }
 
         // Try to load and refresh saved account
         if (Files.exists(authPath) && Files.isRegularFile(authPath)) {
@@ -63,14 +72,24 @@ public class Account {
                 String queryParam = verificationUri.contains("?") ? "&" : "?";
                 String fullUrl = verificationUri + queryParam + "otc=" + msaDeviceCode.getUserCode();
 
-                System.out.println("Microsoft Account Login Required!");
-                System.out.println("1. Visit URL: " + fullUrl);
-                System.out.println("2. Or go to " + verificationUri + " and enter code: " + msaDeviceCode.getUserCode());
+                if (jsonOutput) {
+                    JsonObject eventObj = new JsonObject();
+                    eventObj.addProperty("event", "device_code");
+                    eventObj.addProperty("verificationUri", verificationUri);
+                    eventObj.addProperty("userCode", msaDeviceCode.getUserCode());
+                    eventObj.addProperty("fullUrl", fullUrl);
+                    System.out.println(eventObj.toString());
+                    System.out.flush();
+                } else {
+                    System.out.println("Microsoft Account Login Required!");
+                    System.out.println("1. Visit URL: " + fullUrl);
+                    System.out.println("2. Or go to " + verificationUri + " and enter code: " + msaDeviceCode.getUserCode());
 
-                if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                    try {
-                        Desktop.getDesktop().browse(URI.create(fullUrl));
-                    } catch (IOException ignored) {
+                    if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                        try {
+                            Desktop.getDesktop().browse(URI.create(fullUrl));
+                        } catch (IOException ignored) {
+                        }
                     }
                 }
             }
@@ -99,6 +118,10 @@ public class Account {
     }
 
     private static void save(Path path, Account account) throws IOException {
+        Path parent = path.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
         JsonObject json = BedrockAuthManager.toJson(account.getAuthManager());
         Files.writeString(path, json.toString(), StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);

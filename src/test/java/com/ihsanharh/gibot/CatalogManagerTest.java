@@ -288,4 +288,100 @@ public class CatalogManagerTest {
         assertTrue(catalogManager.findItem("Search").isEmpty());
         assertTrue(catalogManager.findItem("Go back").isEmpty());
     }
+
+    @Test
+    public void testLiveHiveMainMenuSkipsWishlistButtons() {
+        String liveMainForm = """
+        {
+            "buttons": [
+                {"text": "Buy Gifts"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/bundles.png", "type": "url"}, "text": "§5§5SkyBlock Horizons Founder Rank\\n§t0 Available §f(§716 tokens§f)"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/costumes.png", "type": "url"}, "text": "§5§5Regular Costume\\n§a5 Available"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/pets.png", "type": "url"}, "text": "§5§5Regular Pet\\n§a9 Gift Tokens Available"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/mounts.png", "type": "url"}, "text": "§5§5Regular Mount\\n§a9 Gift Tokens Available"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/hats.png", "type": "url"}, "text": "§5§5Hats\\n§a9 Gift Tokens Available"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/backblings.png", "type": "url"}, "text": "§5§5Back Blings\\n§a9 Gift Tokens Available"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/bundles.png", "type": "url"}, "text": "§5§5Murder Mystery Packs\\n§a9 Gift Tokens Available"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/bundles.png", "type": "url"}, "text": "§5§5Ultimate Rank\\n§a§f(§t11-22 tokens§f)"},
+                {"image": {"data": "https://cdn.playhive.com/icons/hub/gifts/bundles.png", "type": "url"}, "text": "§51 Hour XP Boost\\n§a9 Available §f(§71 tokens§f)"},
+                {"text": "My Wishlist"},
+                {"text": "Friends' Wishlists"}
+            ],
+            "content": "You have gifts available! You can also buy more gifts using the Buy Gifts button.",
+            "title": "Gifting",
+            "type": "form"
+        }
+        """;
+
+        CatalogManager.ParsedFormInfo info = catalogManager.processForm(liveMainForm, "hsuwz", null);
+
+        assertTrue(info.isMainForm());
+        assertFalse(info.hasNoGiftTokens());
+        assertEquals(9, info.getTokenBalance());
+        assertEquals(5, info.getCategoryTokens().get("Regular Costume"));
+        assertEquals(6, info.getSubcategories().size());
+        assertEquals(
+                java.util.List.of(
+                        "Regular Costume",
+                        "Regular Pet",
+                        "Regular Mount",
+                        "Hats",
+                        "Back Blings",
+                        "Murder Mystery Packs"
+                ),
+                info.getSubcategories().stream().map(CatalogManager.SubcategoryButton::getName).toList()
+        );
+        assertTrue(catalogManager.findItem("SkyBlock Horizons Founder Rank").isPresent());
+        assertTrue(catalogManager.findItem("Ultimate Rank").isPresent());
+        assertTrue(catalogManager.findItem("1 Hour XP Boost").isPresent());
+        assertTrue(catalogManager.findItem("My Wishlist").isEmpty());
+        assertTrue(catalogManager.findItem("Friends' Wishlists").isEmpty());
+    }
+
+    @Test
+    public void testZeroGiftTokensWithWishlistButtons() {
+        String zeroTokensWithWishlistForm = """
+        {
+            "type": "form",
+            "title": "Gifting",
+            "content": "You have gifts available! You can also buy more gifts using the Buy Gifts button.",
+            "buttons": [
+                {"text": "Buy Gifts"},
+                {"text": "My Wishlist"},
+                {"text": "Friends' Wishlists"}
+            ]
+        }
+        """;
+
+        CatalogManager.ParsedFormInfo info = catalogManager.processForm(zeroTokensWithWishlistForm, "TestBot", null);
+
+        assertTrue(info.isMainForm());
+        assertTrue(info.hasNoGiftTokens());
+        assertEquals(0, info.getTokenBalance());
+        assertTrue(info.getSubcategories().isEmpty());
+    }
+
+    @Test
+    public void testElementsFormNotParsedAsStoreItems() {
+        String wishlistElementsForm = """
+        {
+            "type": "form",
+            "title": "MY WISHLIST§m§8§m§l",
+            "content": "§r0 / 10\\t§rYour wishlist is empty.",
+            "elements": [
+                {"text": "§r< Back§m§k", "type": "button"},
+                {"text": "§rVisible to: Nobody§m§v", "type": "button"},
+                {"type": "header", "text": ""}
+            ]
+        }
+        """;
+
+        CatalogManager.ParsedFormInfo info = catalogManager.processForm(wishlistElementsForm, "hsuwz", "My Wishlist");
+
+        assertFalse(info.isMainForm());
+        assertTrue(info.getItems().isEmpty());
+        assertEquals(-1, info.getGoBackButtonIndex());
+        assertEquals("MY WISHLIST", info.getTitle());
+        assertEquals("form", info.getFormType());
+    }
 }

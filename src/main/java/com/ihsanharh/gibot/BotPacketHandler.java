@@ -556,6 +556,9 @@ public class BotPacketHandler implements BedrockPacketHandler {
             if (info.getTitle() != null && !info.getTitle().isBlank()) {
                 this.lastFormTitle = info.getTitle();
             }
+            if (info.getFormType() != null && !info.getFormType().isBlank()) {
+                this.lastFormType = info.getFormType();
+            }
         }
         updateState("Received form '" + (lastFormTitle != null ? lastFormTitle : "unknown") + "' (id=" + packet.getFormId() + ")");
 
@@ -598,14 +601,23 @@ public class BotPacketHandler implements BedrockPacketHandler {
         }
 
         // --- FETCH MODE ---
-        if (info.isMainForm()) {
+        if ("Buy Gifts".equals(info.getTitle())) {
+            log.warn("[STRICT VALIDATION] Matched 'Buy Gifts' menu during fetch. Account has no gift tokens.");
+            outputFailure("Account does not have any gift tokens!");
+            sendModalFormResponse(packet.getFormId(), "null");
+            disconnectAndExit(1);
+            return PacketSignal.HANDLED;
+        }
+
+        if ("form".equalsIgnoreCase(info.getFormType()) && "Gifting".equals(info.getTitle()) && info.isMainForm()) {
             this.activeSubcategory = null;
             this.searchedInCurrentSubcategory = false;
 
-            // Checker: Account does not have any gift tokens (form returns only Buy Gifts)
+            // Checker: Account does not have any gift tokens (form returns only Buy Gifts / ignored buttons)
             if (info.hasNoGiftTokens()) {
-                log.warn("Account has no gift tokens! /gift form returned only 'Buy Gifts'.");
+                log.warn("[STRICT VALIDATION] Account has no gift tokens! /gift form returned only non-catalog buttons.");
                 outputFailure("Account does not have any gift tokens!");
+                sendModalFormResponse(packet.getFormId(), "null");
                 disconnectAndExit(1);
                 return PacketSignal.HANDLED;
             }
@@ -642,6 +654,7 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 final int formId = packet.getFormId();
                 final int btnIdx = targetBtnIndex;
                 ticker.schedule(() -> clickFormButton(formId, btnIdx), 150, TimeUnit.MILLISECONDS);
+                return PacketSignal.HANDLED;
             } else {
                 // All sub-menus have been crawled!
                 crawlInProgress = false;
@@ -658,25 +671,27 @@ public class BotPacketHandler implements BedrockPacketHandler {
                     catalogManager.printCatalogSummary();
                     disconnectAndExit(0);
                 }
+                return PacketSignal.HANDLED;
             }
-        } else {
+        } else if (crawlInProgress && "form".equalsIgnoreCase(info.getFormType()) && "Gifting".equals(info.getTitle()) && info.getGoBackButtonIndex() != -1) {
             // Subcategory form loaded during crawl
             String categoryName = activeSubcategory != null ? activeSubcategory : info.getTitle();
             log.info("Sub-menu '{}' loaded ({} items).", categoryName, info.getItems().size());
 
-            if (crawlInProgress) {
-                int backBtnIndex = info.getGoBackButtonIndex();
-                if (backBtnIndex != -1) {
-                    final int formId = packet.getFormId();
-                    log.info("Clicking 'Go back' button (index {}) in '{}' to return to Main Menu...", backBtnIndex, categoryName);
-                    ticker.schedule(() -> clickFormButton(formId, backBtnIndex), 150, TimeUnit.MILLISECONDS);
-                } else {
-                    log.warn("No 'Go back' button found in '{}'. Closing form...", categoryName);
-                    final int formId = packet.getFormId();
-                    ticker.schedule(() -> sendModalFormResponse(formId, "null"), 150, TimeUnit.MILLISECONDS);
-                }
-            }
+            int backBtnIndex = info.getGoBackButtonIndex();
+            final int formId = packet.getFormId();
+            log.info("Clicking 'Go back' button (index {}) in '{}' to return to Main Menu...", backBtnIndex, categoryName);
+            ticker.schedule(() -> clickFormButton(formId, backBtnIndex), 150, TimeUnit.MILLISECONDS);
+            return PacketSignal.HANDLED;
         }
+
+        // Strict validation safeguard for FETCH mode: fail fast on unrecognized/missing-back forms
+        log.error("[STRICT VALIDATION FAILED] Unrecognized form structure during fetch: Type='{}', Title='{}', ActiveSubcategory='{}'. Aborting safely without taking action.",
+                info.getFormType(), info.getTitle(), activeSubcategory);
+        outputFailure(String.format("Strict validation failed: Unrecognized form received from server (Type='%s', Title='%s'). Aborting safely.",
+                info.getFormType(), info.getTitle()));
+        sendModalFormResponse(packet.getFormId(), "null");
+        disconnectAndExit(1);
 
         return PacketSignal.HANDLED;
     }
@@ -756,8 +771,8 @@ public class BotPacketHandler implements BedrockPacketHandler {
                 int buyGiftsIdx = findButtonByExactText(root, "Buy Gifts");
                 log.info("[STRICT VALIDATION] Matched Main Store Form: Title='{}', Content='{}'. Found 'Buy Gifts' button at index {}.", formTitle, contentText, buyGiftsIdx);
 
-                // If only 1 button exists ("Buy Gifts"), account has 0 tokens
-                if (root.has("buttons") && root.getAsJsonArray("buttons").size() == 1 && buyGiftsIdx != -1) {
+                // If only non-catalog buttons exist ("Buy Gifts" + wishlists), account has 0 tokens
+                if (info.hasNoGiftTokens() || (root.has("buttons") && root.getAsJsonArray("buttons").size() == 1 && buyGiftsIdx != -1)) {
                     log.warn("[STRICT VALIDATION] Main Store only contains 'Buy Gifts' button. Account has 0 gift tokens.");
                     outputFailure("Account does not have any gift tokens!");
                     sendModalFormResponse(packet.getFormId(), "null");

@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -28,6 +29,11 @@ public class CatalogManager {
     private static final Pattern DIRECT_COST_PATTERN = Pattern.compile("\\((\\d+)(?:-(\\d+))?\\s+tokens?\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SUB_ITEM_COST_PATTERN = Pattern.compile("(\\d+)\\s+Tokens?", Pattern.CASE_INSENSITIVE);
     private static final Pattern STOCK_PATTERN = Pattern.compile("(\\d+)\\s+Available", Pattern.CASE_INSENSITIVE);
+    private static final Set<String> IGNORED_MAIN_MENU_BUTTONS = Set.of(
+            "Buy Gifts",
+            "My Wishlist",
+            "Friends' Wishlists"
+    );
 
     @Data
     @NoArgsConstructor
@@ -82,6 +88,8 @@ public class CatalogManager {
             JsonObject root = JsonParser.parseString(formJson).getAsJsonObject();
             String title = root.has("title") ? cleanFormatting(root.get("title").getAsString()) : "";
             info.setTitle(title);
+            String formType = root.has("type") ? root.get("type").getAsString() : "";
+            info.setFormType(formType);
 
             if (!root.has("buttons") || !root.get("buttons").isJsonArray()) {
                 return info;
@@ -104,22 +112,7 @@ public class CatalogManager {
             if (isMainForm) {
                 this.data.setAccountName(accountName);
 
-                // Checker: when the account has no gift tokens, Hive returns only 1 button: "Buy Gifts"
-                boolean onlyBuyGiftsButton = false;
-                if (buttons.size() == 1) {
-                    String btn0 = cleanFormatting(buttons.get(0).getAsJsonObject().get("text").getAsString());
-                    String line0 = btn0.split("\n")[0].trim();
-                    if (line0.equals("Buy Gifts")) {
-                        onlyBuyGiftsButton = true;
-                    }
-                }
-
-                if (onlyBuyGiftsButton) {
-                    info.setNoTokens(true);
-                    info.setTokenBalance(0);
-                    this.data.setAccountTokenBalance(0);
-                    log.warn("Account has no gift tokens! /gift form returned only one button: 'Buy Gifts'.");
-                }
+                boolean hasBuyGiftsButton = false;
 
                 for (int i = 0; i < buttons.size(); i++) {
                     String raw = buttons.get(i).getAsJsonObject().get("text").getAsString();
@@ -137,15 +130,19 @@ public class CatalogManager {
                         }
                     }
 
+                    if ("Buy Gifts".equals(btnName)) {
+                        hasBuyGiftsButton = true;
+                    }
+
+                    if (btnName.isEmpty() || IGNORED_MAIN_MENU_BUTTONS.contains(btnName)) {
+                        continue;
+                    }
+
                     Matcher categoryTokenAvail = CATEGORY_TOKEN_AVAIL_PATTERN.matcher(clean);
                     if (categoryTokenAvail.find()) {
                         int balance = Integer.parseInt(categoryTokenAvail.group(1));
                         info.getCategoryTokens().put(btnName, balance);
                         this.data.getCategoryTokens().put(btnName, balance);
-                    }
-
-                    if (btnName.toLowerCase().contains("buy gifts")) {
-                        continue;
                     }
 
                     String imageUrl = extractImageUrl(buttons.get(i));
@@ -175,6 +172,17 @@ public class CatalogManager {
                     } else {
                         info.getSubcategories().add(new SubcategoryButton(btnName, i));
                     }
+                }
+
+                if (hasBuyGiftsButton
+                        && info.getItems().isEmpty()
+                        && info.getSubcategories().isEmpty()
+                        && info.getTokenBalance() <= 0
+                        && info.getCategoryTokens().isEmpty()) {
+                    info.setNoTokens(true);
+                    info.setTokenBalance(0);
+                    this.data.setAccountTokenBalance(0);
+                    log.warn("Account has no gift tokens! /gift form returned only non-catalog buttons alongside 'Buy Gifts'.");
                 }
             } else {
                 String category = (activeSubcategory != null && !activeSubcategory.isBlank()) ? activeSubcategory : title;
@@ -377,6 +385,7 @@ public class CatalogManager {
     @Data
     public static class ParsedFormInfo {
         private String title = "";
+        private String formType = "";
         private boolean isMainForm = false;
         private boolean noTokens = false;
         private int tokenBalance = -1;
